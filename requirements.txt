@@ -1,0 +1,14 @@
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+pandas
+numpy
+python-dateutil
+pydantic
+typing-extensions
+networkx
+streamlit 
+plotly
+anthropic
+toml
