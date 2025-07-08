@@ -21,6 +21,7 @@ CROSS_SHEET_REGEX = re.compile(r"(?:'([^']+)')|(?:(\w+)![$]?[A-Z]+[$]?\d+)")
 class CellInfo:
     row: int
     col: int
+    address: str  # Add this field
     value: Union[str, float, int, None]
     data_type: str
     formula: Optional[str]
@@ -40,8 +41,10 @@ class ColumnMetadata:
     first_cell_formula: Optional[str]
     sheet: str
     sample_values: List[Union[str, float, int]]
+    addresses: List[str]  # 👈 add this
     description: Optional[str] = None
     cross_sheet_refs: Optional[List[str]] = None
+
 
 
 
@@ -89,7 +92,15 @@ class SpreadsheetParserAdvanced:
                     formula_str = str(formula) if formula is not None else ""
                     raw_formula = formula_str if formula_str.startswith("=") else None
                     data_type = self._infer_type(val, raw_formula)
-                    cell_map[addr] = CellInfo(row=r, col=c, value=val, data_type=data_type, formula=raw_formula)
+                    addr = self._cell_address(r, c)
+                    cell_map[addr] = CellInfo(
+                        row=r,
+                        col=c,
+                        address=addr,  # pass actual cell address here
+                        value=val,
+                        data_type=data_type,
+                        formula=raw_formula
+                    )
             all_cells[sheet.title] = cell_map
 
         return SpreadsheetData(title=spreadsheet.title, sheet_names=sheet_names, cells=all_cells)
@@ -137,13 +148,15 @@ class SpreadsheetParserAdvanced:
                     # Extract sheet names from matches
                     cross_refs = list({m[0] or m[1] for m in matches if (m[0] or m[1])})
 
+                addresses = [cell.address for cell in col_cells[:13]]
                 col_meta = ColumnMetadata(
                     header=header,
                     data_type=col_cells[0].data_type if col_cells else "unknown",
                     first_cell_formula=first_formula_cell.formula if first_formula_cell else None,
                     sheet=sheet_name,
                     sample_values=sample_values,
-                    cross_sheet_refs=cross_refs or None
+                    cross_sheet_refs=cross_refs or None,
+                    addresses=addresses
                 )
                 columns[header] = col_meta
 
