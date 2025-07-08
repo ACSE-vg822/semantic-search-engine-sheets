@@ -2,24 +2,50 @@
 
 import os
 import json
+import toml
+import logging
 import anthropic
 from typing import List
 from dataclasses import asdict
 
+try:
+    import streamlit as st
+    STREAMLIT_AVAILABLE = True
+except ImportError:
+    STREAMLIT_AVAILABLE = False
+
 from src.rag.retriever import SpreadsheetRetriever
 from src.data_ingestion.spreadsheet_parser_advance import ColumnMetadata
+
+logger = logging.getLogger(__name__)
 
 
 class QueryEngine:
     def __init__(self, retriever: SpreadsheetRetriever):
         self.retriever = retriever
         self.api_key = self._load_claude_key()
+        if not self.api_key:
+            raise ValueError("Claude API key not found in Streamlit secrets or local secrets.toml.")
         self.client = anthropic.Anthropic(api_key=self.api_key)
 
     def _load_claude_key(self) -> str:
-        import toml
-        secrets = toml.load(".streamlit/secrets.toml")
-        return secrets["claude_api_key"]
+        """Load Claude API key from Streamlit secrets or local .streamlit/secrets.toml."""
+        if STREAMLIT_AVAILABLE:
+            try:
+                return st.secrets["claude_api_key"]
+            except Exception as e:
+                logger.debug(f"Streamlit secrets unavailable: {e}")
+
+        try:
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            secrets_path = os.path.join(project_root, '.streamlit', 'secrets.toml')
+            if os.path.exists(secrets_path):
+                secrets = toml.load(secrets_path)
+                return secrets.get("claude_api_key", "")
+        except Exception as e:
+            logger.warning(f"Error loading local secrets.toml: {e}")
+
+        return ""
 
     def _build_context(self, columns: List[ColumnMetadata]) -> str:
         context = []

@@ -3,11 +3,13 @@
 import os
 import json
 import logging
+import toml
 from typing import Dict, List, Optional, Union
 from dataclasses import dataclass, asdict
 
 import gspread
-from google.oauth2.service_account import Credentials
+import streamlit as st
+from google.oauth2 import service_account
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -41,8 +43,7 @@ class ColumnMetadata:
     first_cell_formula: Optional[str]
     sheet: str
     sample_values: List[Union[str, float, int]]
-    addresses: List[str]  # 👈 add this
-    description: Optional[str] = None
+    addresses: str  # Changed to str for range format (e.g., "A2:A13")
     cross_sheet_refs: Optional[List[str]] = None
 
 
@@ -62,19 +63,14 @@ class SpreadsheetKnowledgeGraph:
 
 class SpreadsheetParserAdvanced:
     def __init__(self):
-        credentials_dict = self._load_credentials()
-        creds = Credentials.from_service_account_info(
-            credentials_dict,
+        self.client = self._setup_google_sheets_auth()
+
+    def _setup_google_sheets_auth(self):
+        credentials = service_account.Credentials.from_service_account_info(
+            st.secrets["google_credentials"],
             scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
         )
-        self.client = gspread.authorize(creds)
-
-    def _load_credentials(self) -> dict:
-        import toml
-        secrets_path = os.path.join(".streamlit", "secrets.toml")
-        if not os.path.exists(secrets_path):
-            raise FileNotFoundError("Missing .streamlit/secrets.toml")
-        return toml.load(secrets_path)["google_credentials"]
+        return gspread.authorize(credentials)
 
     def parse(self, spreadsheet_id: str) -> SpreadsheetData:
         spreadsheet = self.client.open_by_key(spreadsheet_id)
@@ -148,7 +144,15 @@ class SpreadsheetParserAdvanced:
                     # Extract sheet names from matches
                     cross_refs = list({m[0] or m[1] for m in matches if (m[0] or m[1])})
 
-                addresses = [cell.address for cell in col_cells[:13]]
+                # Create range format for addresses (e.g., "A2:A13")
+                selected_cells = col_cells[:13]
+                if selected_cells:
+                    first_address = selected_cells[0].address
+                    last_address = selected_cells[-1].address
+                    addresses = f"{first_address}:{last_address}"
+                else:
+                    addresses = ""
+                
                 col_meta = ColumnMetadata(
                     header=header,
                     data_type=col_cells[0].data_type if col_cells else "unknown",
