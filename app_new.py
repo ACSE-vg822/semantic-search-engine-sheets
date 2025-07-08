@@ -200,16 +200,3 @@ if sheet_choice != "Please select a spreadsheet...":
         except Exception as e:
             st.error(f"❌ An error occurred: {str(e)}")
             logger.error(f"Error in main flow: {e}", exc_info=True)
-        
-# Footer with information about the advanced features
-st.markdown("---")
-st.markdown("""
-### 🚀 Advanced Features:
-- **Knowledge Graph Caching**: Builds and caches knowledge graph on spreadsheet selection for faster queries
-- **Retriever Caching**: Caches the retriever with pre-computed embeddings - no recomputation needed per query
-- **Model Caching**: Sentence transformer model loaded once and cached for maximum performance
-- **Knowledge Graph**: Builds comprehensive metadata including cross-sheet references
-- **Statistical Analysis**: Automatically calculates min/max/mean for numerical columns
-- **Semantic Embeddings**: Uses sentence transformers for better semantic matching
-- **Enhanced Context**: Provides Claude with rich statistical and structural information
-""")
