@@ -26,13 +26,6 @@ sheet_id = SPREADSHEETS[sheet_choice]
 # Query input
 query = st.text_input("Enter your semantic query:")
 
-# Options for the advanced features
-col1, col2 = st.columns(2)
-with col1:
-    use_embeddings = st.checkbox("Use sentence embeddings", value=True, help="Enable advanced semantic similarity using sentence transformers")
-with col2:
-    debug_mode = st.checkbox("Debug mode", value=False, help="Show debug information about retrieval process")
-
 if st.button("Search") and query.strip():
     try:
         # Step 1: Parse the spreadsheet and build knowledge graph
@@ -54,8 +47,7 @@ if st.button("Search") and query.strip():
         with st.spinner("🧠 Setting up semantic retriever..."):
             retriever = SpreadsheetRetriever(
                 knowledge_graph, 
-                use_embeddings=use_embeddings, 
-                debug=debug_mode
+                use_embeddings=True
             )
             
         # Step 3: Create query engine with the retriever
@@ -67,15 +59,6 @@ if st.button("Search") and query.strip():
             response = engine.ask(query)
             
         st.success("🎯 Search Results")
-        
-        # Display debug information if enabled
-        if debug_mode:
-            with st.expander("🔬 Debug Information"):
-                st.write("**Top 5 Retrieved Columns:**")
-                top_columns = retriever.retrieve(query, top_k=5)
-                for i, (col_meta, score) in enumerate(top_columns, 1):
-                    st.write(f"{i}. **{col_meta.sheet} → {col_meta.header}** (Score: {score:.3f})")
-                    st.write(f"   Data type: {col_meta.data_type}, Sample: {col_meta.sample_values[:3]}")
         
         # Parse and display Claude's response
         try:
