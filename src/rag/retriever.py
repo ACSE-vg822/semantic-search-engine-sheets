@@ -17,13 +17,14 @@ except ImportError:
 
 
 class SpreadsheetRetriever:
-    def __init__(self, knowledge_graph: SpreadsheetKnowledgeGraph, use_embeddings: bool = True, debug: bool = False):
+    def __init__(self, knowledge_graph: SpreadsheetKnowledgeGraph, use_embeddings: bool = True, debug: bool = False, model: Optional['SentenceTransformer'] = None):
         self.kg = knowledge_graph
         self.entries = self._build_corpus()
         self.use_embeddings = use_embeddings and EMBEDDINGS_AVAILABLE
         self.debug = debug
         if self.use_embeddings:
-            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            # Use provided model or load a new one
+            self.model = model if model is not None else SentenceTransformer('all-MiniLM-L6-v2')
             self.embeddings = self.model.encode([entry["text"] for entry in self.entries], convert_to_tensor=True)
 
     def _build_corpus(self) -> List[Dict]:

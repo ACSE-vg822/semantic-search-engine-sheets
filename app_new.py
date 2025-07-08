@@ -69,7 +69,22 @@ def build_and_cache_knowledge_graph(sheet_id, sheet_name):
             st.session_state.current_sheet_id = sheet_id
             st.session_state.current_sheet_name = sheet_name
             
-        st.success(f"✅ Knowledge graph built for: {knowledge_graph.title}")
+        # Build and cache the retriever with the knowledge graph
+        with st.spinner("🧠 Building semantic retriever (includes embedding computation)..."):
+            # Get cached sentence transformer model
+            cached_model = get_cached_sentence_transformer()
+            
+            # Create retriever with the cached knowledge graph and model
+            retriever = SpreadsheetRetriever(
+                knowledge_graph, 
+                use_embeddings=True,
+                model=cached_model
+            )
+            
+            # Cache the retriever
+            st.session_state.retriever = retriever
+            
+        st.success(f"✅ Knowledge graph and retriever built for: {knowledge_graph.title}")
         return knowledge_graph
     except Exception as e:
         st.error(f"❌ Error building knowledge graph: {str(e)}")
@@ -93,6 +108,29 @@ if 'current_sheet_id' not in st.session_state:
     st.session_state.current_sheet_id = None
 if 'current_sheet_name' not in st.session_state:
     st.session_state.current_sheet_name = None
+if 'sentence_transformer_model' not in st.session_state:
+    st.session_state.sentence_transformer_model = None
+if 'retriever' not in st.session_state:
+    st.session_state.retriever = None
+
+def get_cached_sentence_transformer():
+    """Get or load the sentence transformer model from cache."""
+    if st.session_state.sentence_transformer_model is None:
+        try:
+            with st.spinner("🤖 Loading sentence transformer model (one-time setup)..."):
+                from sentence_transformers import SentenceTransformer
+                st.session_state.sentence_transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
+            st.success("✅ Sentence transformer model loaded and cached!")
+        except ImportError:
+            st.warning("⚠️ Sentence transformers not available. Using fallback similarity.")
+            return None
+        except Exception as e:
+            st.error(f"❌ Error loading sentence transformer: {str(e)}")
+            return None
+    else:
+        # Model is already cached
+        st.info("🚀 Using cached sentence transformer model")
+    return st.session_state.sentence_transformer_model
 
 # Spreadsheet selector
 spreadsheet_options = ["Please select a spreadsheet..."] + list(SPREADSHEETS.keys())
@@ -111,7 +149,7 @@ else:
     else:
         knowledge_graph = st.session_state.knowledge_graph
         if knowledge_graph:
-            st.info(f"📋 Using cached knowledge graph for: {knowledge_graph.title}")
+            st.info(f"📋 Using cached knowledge graph and retriever for: {knowledge_graph.title}")
 
 # Show spreadsheet overview if knowledge graph is available
 if knowledge_graph:
@@ -132,18 +170,19 @@ if sheet_choice != "Please select a spreadsheet...":
             st.stop()
             
         try:
-            # Step 1: Create retriever with the cached knowledge graph
-            with st.spinner("🧠 Setting up semantic retriever..."):
-                retriever = SpreadsheetRetriever(
-                    knowledge_graph, 
-                    use_embeddings=True
-                )
+            # Use cached retriever (embeddings already computed)
+            retriever = st.session_state.retriever
+            if not retriever:
+                st.error("❌ Retriever not available. Please try selecting the spreadsheet again.")
+                st.stop()
                 
-            # Step 2: Create query engine with the retriever
+            st.info("🚀 Using cached retriever with pre-computed embeddings")
+                
+            # Create query engine with the cached retriever
             with st.spinner("⚙️ Initializing query engine..."):
                 engine = QueryEngine(retriever, spreadsheet_id=SPREADSHEETS[sheet_choice])
                 
-            # Step 3: Process the query
+            # Process the query
             with st.spinner("🔍 Processing your query with Claude..."):
                 response = engine.ask(query)
                 
@@ -167,6 +206,8 @@ st.markdown("---")
 st.markdown("""
 ### 🚀 Advanced Features:
 - **Knowledge Graph Caching**: Builds and caches knowledge graph on spreadsheet selection for faster queries
+- **Retriever Caching**: Caches the retriever with pre-computed embeddings - no recomputation needed per query
+- **Model Caching**: Sentence transformer model loaded once and cached for maximum performance
 - **Knowledge Graph**: Builds comprehensive metadata including cross-sheet references
 - **Statistical Analysis**: Automatically calculates min/max/mean for numerical columns
 - **Semantic Embeddings**: Uses sentence transformers for better semantic matching
