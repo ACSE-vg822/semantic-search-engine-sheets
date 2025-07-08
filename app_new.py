@@ -56,6 +56,26 @@ def display_search_results(parsed_results):
             if 'cross_sheet_refs' in res and res['cross_sheet_refs']:
                 st.markdown(f"**Cross-sheet references:** {', '.join(res['cross_sheet_refs'])}")
 
+def build_and_cache_knowledge_graph(sheet_id, sheet_name):
+    """Build and cache the knowledge graph for the selected spreadsheet."""
+    try:
+        with st.spinner("📊 Building knowledge graph for faster queries..."):
+            parser = SpreadsheetParserAdvanced()
+            spreadsheet_data = parser.parse(sheet_id)
+            knowledge_graph = parser.build_knowledge_graph(spreadsheet_data)
+            
+            # Cache in session state
+            st.session_state.knowledge_graph = knowledge_graph
+            st.session_state.current_sheet_id = sheet_id
+            st.session_state.current_sheet_name = sheet_name
+            
+        st.success(f"✅ Knowledge graph built for: {knowledge_graph.title}")
+        return knowledge_graph
+    except Exception as e:
+        st.error(f"❌ Error building knowledge graph: {str(e)}")
+        logger.error(f"Error building knowledge graph: {e}", exc_info=True)
+        return None
+
 # Hardcoded spreadsheet titles and IDs
 SPREADSHEETS = {
     "Sales Dashboard": "1a0coLtHsNNedSu5LZtqh7k3SBkDGG_IeJEHn-ijW9ls",
@@ -66,64 +86,87 @@ st.set_page_config(page_title="Advanced Semantic Spreadsheet Search", layout="wi
 st.title("🔍 Semantic Spreadsheet Search")
 st.markdown("*Powered by enhanced knowledge graphs and statistical analysis*")
 
+# Initialize session state
+if 'knowledge_graph' not in st.session_state:
+    st.session_state.knowledge_graph = None
+if 'current_sheet_id' not in st.session_state:
+    st.session_state.current_sheet_id = None
+if 'current_sheet_name' not in st.session_state:
+    st.session_state.current_sheet_name = None
+
 # Spreadsheet selector
-sheet_choice = st.selectbox("Choose a spreadsheet:", list(SPREADSHEETS.keys()))
-sheet_id = SPREADSHEETS[sheet_choice]
+spreadsheet_options = ["Please select a spreadsheet..."] + list(SPREADSHEETS.keys())
+sheet_choice = st.selectbox("Choose a spreadsheet:", spreadsheet_options)
 
-# Query input
-query = st.text_input("Enter your semantic query:")
+# Only proceed if a valid spreadsheet is selected
+if sheet_choice == "Please select a spreadsheet...":
+    knowledge_graph = None
+    st.info("👆 Please select a spreadsheet to begin")
+else:
+    sheet_id = SPREADSHEETS[sheet_choice]
+    
+    # Check if user selected a different spreadsheet and build/cache knowledge graph
+    if st.session_state.current_sheet_id != sheet_id:
+        knowledge_graph = build_and_cache_knowledge_graph(sheet_id, sheet_choice)
+    else:
+        knowledge_graph = st.session_state.knowledge_graph
+        if knowledge_graph:
+            st.info(f"📋 Using cached knowledge graph for: {knowledge_graph.title}")
 
-if st.button("Search") and query.strip():
-    try:
-        # Step 1: Parse the spreadsheet and build knowledge graph
-        with st.spinner("📊 Parsing spreadsheet and building knowledge graph..."):
-            parser = SpreadsheetParserAdvanced()
-            spreadsheet_data = parser.parse(sheet_id)
-            knowledge_graph = parser.build_knowledge_graph(spreadsheet_data)
+# Show spreadsheet overview if knowledge graph is available
+if knowledge_graph:
+    with st.expander("📈 Spreadsheet Overview"):
+        st.write(f"**Title:** {knowledge_graph.title}")
+        st.write(f"**Sheets:** {len(knowledge_graph.sheets)}")
+        for sheet_name, sheet_meta in knowledge_graph.sheets.items():
+            st.write(f"  - **{sheet_name}**: {len(sheet_meta.columns)} columns")
+
+# Only show search functionality if a valid spreadsheet is selected
+if sheet_choice != "Please select a spreadsheet...":
+    # Query input
+    query = st.text_input("Enter your semantic query:")
+    
+    if st.button("Search") and query.strip():
+        if not knowledge_graph:
+            st.error("❌ Please select a spreadsheet first.")
+            st.stop()
             
-        st.success(f"✅ Parsed spreadsheet: {knowledge_graph.title}")
-        
-        # Show spreadsheet overview
-        with st.expander("📈 Spreadsheet Overview"):
-            st.write(f"**Title:** {knowledge_graph.title}")
-            st.write(f"**Sheets:** {len(knowledge_graph.sheets)}")
-            for sheet_name, sheet_meta in knowledge_graph.sheets.items():
-                st.write(f"  - **{sheet_name}**: {len(sheet_meta.columns)} columns")
-        
-        # Step 2: Create retriever with the knowledge graph
-        with st.spinner("🧠 Setting up semantic retriever..."):
-            retriever = SpreadsheetRetriever(
-                knowledge_graph, 
-                use_embeddings=True
-            )
+        try:
+            # Step 1: Create retriever with the cached knowledge graph
+            with st.spinner("🧠 Setting up semantic retriever..."):
+                retriever = SpreadsheetRetriever(
+                    knowledge_graph, 
+                    use_embeddings=True
+                )
+                
+            # Step 2: Create query engine with the retriever
+            with st.spinner("⚙️ Initializing query engine..."):
+                engine = QueryEngine(retriever, spreadsheet_id=SPREADSHEETS[sheet_choice])
+                
+            # Step 3: Process the query
+            with st.spinner("🔍 Processing your query with Claude..."):
+                response = engine.ask(query)
+                
+            st.success("🎯 Search Results")
             
-        # Step 3: Create query engine with the retriever
-        with st.spinner("⚙️ Initializing query engine..."):
-            engine = QueryEngine(retriever, spreadsheet_id=sheet_id)
-            
-        # Step 4: Process the query
-        with st.spinner("🔍 Processing your query with Claude..."):
-            response = engine.ask(query)
-            
-        st.success("🎯 Search Results")
-        
-        # Parse and display Claude's response
-        parsed_results, error_message = parse_claude_response(response)
-        if error_message:
-            st.error(error_message)
-            st.write("**Raw Response:**")
-            st.code(response, language="text")
-        else:
-            display_search_results(parsed_results)
-            
-    except Exception as e:
-        st.error(f"❌ An error occurred: {str(e)}")
-        logger.error(f"Error in main flow: {e}", exc_info=True)
+            # Parse and display Claude's response
+            parsed_results, error_message = parse_claude_response(response)
+            if error_message:
+                st.error(error_message)
+                st.write("**Raw Response:**")
+                st.code(response, language="text")
+            else:
+                display_search_results(parsed_results)
+                
+        except Exception as e:
+            st.error(f"❌ An error occurred: {str(e)}")
+            logger.error(f"Error in main flow: {e}", exc_info=True)
         
 # Footer with information about the advanced features
 st.markdown("---")
 st.markdown("""
 ### 🚀 Advanced Features:
+- **Knowledge Graph Caching**: Builds and caches knowledge graph on spreadsheet selection for faster queries
 - **Knowledge Graph**: Builds comprehensive metadata including cross-sheet references
 - **Statistical Analysis**: Automatically calculates min/max/mean for numerical columns
 - **Semantic Embeddings**: Uses sentence transformers for better semantic matching
