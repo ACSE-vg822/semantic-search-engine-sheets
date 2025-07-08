@@ -157,13 +157,16 @@ class QueryEngine:
         context = self._build_context(top_metadata)
 
         system_prompt = (
-            "You are a spreadsheet AI assistant. Given a user query and structured spreadsheet context, "
+            "You are a spreadsheet AI assistant. You are exceptionally adept at analyzing business oriented spreadsheets. Given a user query and structured spreadsheet context, "
             "provide a precise and helpful answer using only the context provided.\n\n"
             "The context includes statistical information (min, max, mean, count) for numerical columns when available. "
-            "Use this statistical data to provide more insightful answers about data patterns and ranges.\n\n"
+            "When describing numerical ranges, use clear, consistent formatting:\n"
+            "- For ranges: 'ranging from X to Y' (not X/Y or X₨Y)\n"
+            "- Use consistent currency symbols or no currency symbols. If currency is not specified, don't hallucinate it\n"
+            "- Format numbers clearly with commas: 18,000 to 36,000\n"
+            "- When mentioning averages, say 'with an average of X'\n\n"
             "Your response must follow this JSON format:\n"
             "[{ concept_name, sheet, header, cell_range, formula, explanation }]"
-            "If cell range contains continuous cells then represent like A1:A13 instead of A1,A2,A3,A4,A5,A6,A7,A8,A9,A10,A11,A12,A13"
         )
 
         user_prompt = f"""User query: {query}

@@ -9,6 +9,53 @@ from src.semantic_search.search_engine_advanced import QueryEngine
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def parse_claude_response(response):
+    """Parse JSON from Claude's response and return parsed results."""
+    try:
+        # Extract JSON from Claude's response
+        json_start = response.find('[')
+        json_end = response.rfind(']') + 1
+        if json_start != -1 and json_end != 0:
+            json_text = response[json_start:json_end]
+            parsed_results = json.loads(json_text)
+        else:
+            # Fallback: try to parse the entire response
+            parsed_results = json.loads(response)
+        return parsed_results, None
+    except json.JSONDecodeError as e:
+        return None, f"Failed to parse JSON response from Claude: {str(e)}"
+    except Exception as e:
+        return None, f"Error processing results: {str(e)}"
+
+def normalize_formula_display(formula):
+    """Normalize formula for display by replacing numbers with subscript n."""
+    if not formula:
+        return formula
+    
+    import re
+    # Replace numbers in cell references with subscript n
+    # Pattern matches letter(s) followed by number(s)
+    normalized = re.sub(r'([A-Z]+)(\d+)', r'\1<sub>n</sub>', formula)
+    return normalized
+
+def display_search_results(parsed_results):
+    """Display the parsed search results in Streamlit."""
+    for i, res in enumerate(parsed_results, 1):
+        with st.expander(f"📌 Result {i}: {res.get('concept_name', 'N/A')} in sheet '{res.get('sheet', 'N/A')}'"):
+            st.markdown(f"**Header:** `{res.get('header', 'N/A')}`")
+            st.markdown(f"**Cell Range:** `{res.get('cell_range', 'N/A')}`")
+            if res.get('formula'):
+                normalized_formula = normalize_formula_display(res['formula'])
+                st.markdown(f"**Formula:** {normalized_formula}", unsafe_allow_html=True)
+            else:
+                st.markdown("*No formula*")
+            if res.get('explanation'):
+                st.markdown(f"**Explanation:** {res['explanation']}")
+            
+            # Show cross-sheet references if available
+            if 'cross_sheet_refs' in res and res['cross_sheet_refs']:
+                st.markdown(f"**Cross-sheet references:** {', '.join(res['cross_sheet_refs'])}")
+
 # Hardcoded spreadsheet titles and IDs
 SPREADSHEETS = {
     "Sales Dashboard": "1a0coLtHsNNedSu5LZtqh7k3SBkDGG_IeJEHn-ijW9ls",
@@ -61,42 +108,13 @@ if st.button("Search") and query.strip():
         st.success("🎯 Search Results")
         
         # Parse and display Claude's response
-        try:
-            # Extract JSON from Claude's response
-            json_start = response.find('[')
-            json_end = response.rfind(']') + 1
-            if json_start != -1 and json_end != 0:
-                json_text = response[json_start:json_end]
-                parsed_results = json.loads(json_text)
-            else:
-                # Fallback: try to parse the entire response
-                parsed_results = json.loads(response)
-            
-            # Display results
-            for i, res in enumerate(parsed_results, 1):
-                with st.expander(f"📌 Result {i}: {res.get('concept_name', 'N/A')} in sheet '{res.get('sheet', 'N/A')}'"):
-                    st.markdown(f"**Header:** `{res.get('header', 'N/A')}`")
-                    st.markdown(f"**Cell Range:** `{res.get('cell_range', 'N/A')}`")
-                    if res.get('formula'):
-                        st.markdown(f"**Formula:** `{res['formula']}`")
-                    else:
-                        st.markdown("*No formula*")
-                    if res.get('explanation'):
-                        st.markdown(f"**Explanation:** {res['explanation']}")
-                    
-                    # Show cross-sheet references if available
-                    if 'cross_sheet_refs' in res and res['cross_sheet_refs']:
-                        st.markdown(f"**Cross-sheet references:** {', '.join(res['cross_sheet_refs'])}")
-                        
-        except json.JSONDecodeError as e:
-            st.error("❌ Failed to parse JSON response from Claude.")
+        parsed_results, error_message = parse_claude_response(response)
+        if error_message:
+            st.error(error_message)
             st.write("**Raw Response:**")
             st.code(response, language="text")
-            st.exception(e)
-        except Exception as e:
-            st.error(f"❌ Error processing results: {str(e)}")
-            st.write("**Raw Response:**")
-            st.code(response, language="text")
+        else:
+            display_search_results(parsed_results)
             
     except Exception as e:
         st.error(f"❌ An error occurred: {str(e)}")
@@ -110,4 +128,4 @@ st.markdown("""
 - **Statistical Analysis**: Automatically calculates min/max/mean for numerical columns
 - **Semantic Embeddings**: Uses sentence transformers for better semantic matching
 - **Enhanced Context**: Provides Claude with rich statistical and structural information
-""") 
+""")
