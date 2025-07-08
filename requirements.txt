@@ -12,3 +12,4 @@ streamlit
 plotly
 anthropic
 toml
+sentence-transformers
