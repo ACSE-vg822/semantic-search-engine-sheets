@@ -12,6 +12,7 @@ A semantic search engine that understands spreadsheet content conceptually, allo
    python -m venv myenv
    source myenv/bin/activate  # On Windows: myenv\Scripts\activate
    pip install -r requirements.txt
+   python setup.py install
    ```
 
 2. **Configure Google Sheets API:**
