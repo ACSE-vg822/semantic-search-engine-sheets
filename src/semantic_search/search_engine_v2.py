@@ -38,6 +38,8 @@ class DataFetchPlan:
     specific_rows: List[RowMetadata]
     specific_columns: List[ColumnMetadata]
     expected_insights: List[str]
+    # New: LLM-generated explanations for each data item
+    data_explanations: Dict[str, str]  # key: "row_X" or "col_X", value: explanation
 
 @dataclass
 class EnrichedRowData:
@@ -82,8 +84,16 @@ class QueryAnalyzerNode:
             "target_sheets": ["sheet1", "sheet2"],
             "target_concepts": ["concept1", "concept2"], 
             "analysis_type": "summary|trend|comparison|calculation",
-            "expected_insights": ["insight1", "insight2"]
+            "expected_insights": ["insight1", "insight2"],
+            "data_explanations": {
+                "row_Sheet1_Revenue": "explanation for why this row is relevant",
+                "col_Sheet1_Actual_Revenue": "explanation for why this column is relevant"
+            }
         }
+        
+        For data_explanations, provide a natural language explanation for each relevant row/column 
+        explaining WHY it matches the user's query and what insights it can provide.
+        Use the exact keys shown in the available data (like "row_Sheet1_Revenue", "col_Sheet1_Actual_Revenue").
         
         Analysis types:
         - summary: Basic totals and key metrics
@@ -118,7 +128,8 @@ class QueryAnalyzerNode:
                 analysis_type=plan_json.get("analysis_type", "summary"),
                 specific_rows=rows,  # Pass through the filtered rows
                 specific_columns=columns,  # Pass through the filtered columns
-                expected_insights=plan_json.get("expected_insights", [])
+                expected_insights=plan_json.get("expected_insights", []),
+                data_explanations=plan_json.get("data_explanations", {})  # Extract LLM explanations
             )
             
         except Exception as e:
@@ -130,22 +141,25 @@ class QueryAnalyzerNode:
                 analysis_type="summary",
                 specific_rows=rows,
                 specific_columns=columns,
-                expected_insights=["totals", "key_metrics"]
+                expected_insights=["totals", "key_metrics"],
+                data_explanations={} # Initialize with empty dict
             )
     
     def _summarize_available_data(self, rows: List[RowMetadata], columns: List[ColumnMetadata]) -> str:
-        """Create summary of available data for Claude"""
+        """Create indexed summary of available data for Claude"""
         summary_parts = []
         
         if rows:
             summary_parts.append("Available Row Concepts:")
             for row in rows[:5]:  # Limit to prevent token overflow
-                summary_parts.append(f"  - {row.first_cell_value} ({row.sheet}) - values: {row.sample_values[:3]}")
+                row_key = f"row_{row.sheet}_{row.first_cell_value}".replace(" ", "_")
+                summary_parts.append(f"  {row_key}: {row.first_cell_value} ({row.sheet}) - values: {row.sample_values[:3]}")
         
         if columns:
             summary_parts.append("\nAvailable Columns:")
             for col in columns[:5]:
-                summary_parts.append(f"  - {col.header} ({col.sheet}) - values: {col.sample_values[:3]}")
+                col_key = f"col_{col.sheet}_{col.header}".replace(" ", "_")
+                summary_parts.append(f"  {col_key}: {col.header} ({col.sheet}) - values: {col.sample_values[:3]}")
                 
         return "\n".join(summary_parts)
 
@@ -167,7 +181,8 @@ class DataFetcherNode:
             analysis_type=plan_dict["analysis_type"],
             specific_rows=[RowMetadata(**row) for row in plan_dict["specific_rows"]],
             specific_columns=[ColumnMetadata(**col) for col in plan_dict["specific_columns"]],
-            expected_insights=plan_dict["expected_insights"]
+            expected_insights=plan_dict["expected_insights"],
+            data_explanations=plan_dict["data_explanations"] # Pass through explanations
         )
         enriched_data = self.fetch_targeted_data(plan)
         state["enriched_data"] = [asdict(d) for d in enriched_data]
@@ -212,7 +227,9 @@ class DataFetcherNode:
         if matching_columns and query_is_business_metric:
             # Process matching columns with live data fetching
             for col_meta in matching_columns:
-                enriched_row = self._fetch_live_column_data(col_meta, spreadsheet, plan.target_concepts)
+                col_key = f"col_{col_meta.sheet}_{col_meta.header}".replace(" ", "_")
+                explanation = plan.data_explanations.get(col_key, "Relevant column data")
+                enriched_row = self._fetch_live_column_data(col_meta, spreadsheet, explanation)
                 enriched_data.append(enriched_row)
         
         # Only include rows if we don't have good column matches, or if rows are specifically relevant
@@ -221,12 +238,14 @@ class DataFetcherNode:
             rows_to_process = matching_rows if matching_rows else plan.specific_rows[:3]
             
             for row_meta in rows_to_process:
-                enriched_row = self._fetch_live_row_data(row_meta, spreadsheet, plan.target_concepts)
+                row_key = f"row_{row_meta.sheet}_{row_meta.first_cell_value}".replace(" ", "_")
+                explanation = plan.data_explanations.get(row_key, "Relevant row data")
+                enriched_row = self._fetch_live_row_data(row_meta, spreadsheet, explanation)
                 enriched_data.append(enriched_row)
             
         return enriched_data
     
-    def _fetch_live_column_data(self, col_meta: ColumnMetadata, spreadsheet, target_concepts: List[str]) -> EnrichedRowData:
+    def _fetch_live_column_data(self, col_meta: ColumnMetadata, spreadsheet, explanation: str) -> EnrichedRowData:
         """Fetch live column data from spreadsheet with fallback to cached"""
         if spreadsheet:
             try:
@@ -244,12 +263,6 @@ class DataFetcherNode:
                 cross_refs = {}
                 if flat_formulas:
                     cross_refs = self._resolve_formula_references(flat_formulas, spreadsheet)
-                
-                # Generate explanation for why this column matches the query
-                explanation = self._generate_explanation(
-                    col_meta.header, col_meta.sheet, col_meta.addresses, 
-                    flat_values[:3], target_concepts, "column"
-                )
                 
                 return EnrichedRowData(
                     first_cell_value=f"Column: {col_meta.header}",
@@ -273,15 +286,11 @@ class DataFetcherNode:
         
         # Fallback to cached metadata
         fallback_data = self._create_enriched_from_column(col_meta)
-        # Add explanation to fallback as well
-        explanation = self._generate_explanation(
-            col_meta.header, col_meta.sheet, col_meta.addresses, 
-            col_meta.sample_values[:3], target_concepts, "column"
-        )
+        # Add LLM explanation to fallback as well
         fallback_data.metadata["explanation"] = explanation
         return fallback_data
     
-    def _fetch_live_row_data(self, row_meta: RowMetadata, spreadsheet, target_concepts: List[str]) -> EnrichedRowData:
+    def _fetch_live_row_data(self, row_meta: RowMetadata, spreadsheet, explanation: str) -> EnrichedRowData:
         """Fetch live row data from spreadsheet with fallback to cached"""
         if spreadsheet:
             try:
@@ -299,12 +308,6 @@ class DataFetcherNode:
                 cross_refs = {}
                 if flat_formulas:
                     cross_refs = self._resolve_formula_references(flat_formulas, spreadsheet)
-                
-                # Generate explanation for why this row matches the query
-                explanation = self._generate_explanation(
-                    row_meta.first_cell_value, row_meta.sheet, row_meta.cell_addresses, 
-                    flat_values[:3], target_concepts, "row"
-                )
                 
                 return EnrichedRowData(
                     first_cell_value=row_meta.first_cell_value,
@@ -327,56 +330,11 @@ class DataFetcherNode:
         
         # Fallback to cached metadata
         fallback_data = self._create_enriched_from_metadata(row_meta)
-        # Add explanation to fallback as well
-        explanation = self._generate_explanation(
-            row_meta.first_cell_value, row_meta.sheet, row_meta.cell_addresses, 
-            row_meta.sample_values[:3], target_concepts, "row"
-        )
+        # Add LLM explanation to fallback as well
         fallback_data.metadata["explanation"] = explanation
         return fallback_data
     
-    def _generate_explanation(self, name: str, sheet: str, addresses: str, 
-                            sample_values: List, target_concepts: List[str], data_type: str) -> str:
-        """Generate a concise explanation for why this data matches the query"""
-        
-        # Create explanation based on matching concepts and data characteristics
-        explanation_parts = []
-        
-        # Check which target concepts match
-        matched_concepts = []
-        name_lower = name.lower()
-        for concept in target_concepts:
-            if concept.lower() in name_lower:
-                matched_concepts.append(concept)
-        
-        # Create base explanation
-        if matched_concepts:
-            if data_type == "column":
-                explanation_parts.append(f"Contains '{matched_concepts[0]}' data")
-            else:
-                explanation_parts.append(f"Row labeled '{name}' matches '{matched_concepts[0]}'")
-        else:
-            # Fallback for semantic matches
-            if data_type == "column":
-                explanation_parts.append(f"Column contains relevant financial metrics")
-            else:
-                explanation_parts.append(f"Row contains related business data")
-        
-        # Add context about data type
-        if sample_values:
-            numeric_values = [v for v in sample_values if isinstance(v, (int, float))]
-            if numeric_values:
-                if any(v > 1000 for v in numeric_values):
-                    explanation_parts.append("with large numeric values")
-                elif any(0 < v < 1 for v in numeric_values):
-                    explanation_parts.append("with percentage/ratio values")
-                else:
-                    explanation_parts.append("with numeric calculations")
-        
-        # Add location context
-        explanation_parts.append(f"at {sheet}!{addresses}")
-        
-        return " ".join(explanation_parts) + "."
+
     
     def _resolve_formula_references(self, formulas: List[str], spreadsheet) -> Dict[str, any]:
         """Resolve formula references to actual values"""
