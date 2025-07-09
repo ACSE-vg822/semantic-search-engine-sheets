@@ -291,8 +291,35 @@ if knowledge_graph:
 
 # Only show search functionality if a valid spreadsheet is selected
 if sheet_id:
+    # Initialize query state
+    if 'current_query' not in st.session_state:
+        st.session_state.current_query = ""
+    
     # Query input
-    query = st.text_input("Enter your semantic query:")
+    st.markdown("## 🔍 Search Your Spreadsheet")
+    
+    # Sample questions
+    st.markdown("### 💡 Try these sample questions:")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("💰 Find all revenue calculations", key="sample1"):
+            st.session_state.current_query = "Find all revenue calculations"
+        if st.button("💸 Show me cost-related formulas", key="sample2"):
+            st.session_state.current_query = "Show me cost-related formulas"
+    
+    with col2:
+        if st.button("📊 Where are my margin analyses?", key="sample3"):
+            st.session_state.current_query = "Where are my margin analyses?"
+        if st.button("📈 What percentage calculations do I have?", key="sample4"):
+            st.session_state.current_query = "What percentage calculations do I have?"
+    
+    # Query input with current query as value
+    query = st.text_input("Enter your semantic query:", value=st.session_state.current_query)
+    
+    # Update current query when user types
+    if query != st.session_state.current_query:
+        st.session_state.current_query = query
     
     if st.button("Search") and query.strip():
         if not knowledge_graph:
