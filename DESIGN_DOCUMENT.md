@@ -132,16 +132,7 @@ class SpreadsheetKnowledgeGraph:
 1. **Google Sheets Authentication**: Service account-based secure access
 2. **Data Extraction**: Retrieves values AND formulas for complete context
 3. **Type Inference**: Automatically classifies cells as text/number/formula
-4. **Cross-Sheet Analysis**: Identifies dependencies between sheets using regex
-5. **Dual Representation**: Creates both column-centric and row-centric views
-
-#### Cross-Sheet Reference Detection
-
-```python
-CROSS_SHEET_REGEX = re.compile(r"(?:'([^']+)')|(?:(\w+)![$]?[A-Z]+[$]?\d+)")
-```
-
-Detects patterns like `'Sheet Name'!A1` or `SheetName!A1` in formulas.
+4. **Dual Representation**: Creates both column-centric and row-centric views
 
 ### 2. RAG Retrieval System (`src/rag/retriever.py`)
 
