@@ -120,7 +120,7 @@ def extract_sheet_id_from_url(url_or_id):
     # If no pattern matches, assume it's a direct ID
     return url_or_id.strip()
 
-st.set_page_config(page_title="Advanced Semantic Spreadsheet Search", layout="wide")
+st.set_page_config(page_title="Semantic Spreadsheet Search", layout="wide")
 st.title("🔍 Semantic Spreadsheet Search")
 st.markdown("*Powered by enhanced knowledge graphs and statistical analysis*")
 

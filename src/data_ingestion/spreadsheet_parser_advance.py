@@ -46,8 +46,17 @@ class ColumnMetadata:
     addresses: str  # Changed to str for range format (e.g., "A2:A13")
     cross_sheet_refs: Optional[List[str]] = None
 
-
-
+@dataclass
+class RowMetadata:
+    concept: str                     # Value in first column (e.g. A4 = "Gross Profit")
+    sheet: str
+    row_number: int
+    data_type: str
+    sample_values: List[Union[str, float, int]]
+    formulae: List[str]
+    cell_addresses: List[str]
+    col_headers: List[str]
+    cross_sheet_refs: Optional[List[str]] = None
 
 @dataclass
 class SheetMetadata:
@@ -59,6 +68,7 @@ class SheetMetadata:
 class SpreadsheetKnowledgeGraph:
     title: str
     sheets: Dict[str, SheetMetadata]
+    rows: Optional[Dict[str, List[RowMetadata]]] = None
 
 
 class SpreadsheetParserAdvanced:
@@ -121,6 +131,8 @@ class SpreadsheetParserAdvanced:
 
     def build_knowledge_graph(self, spreadsheet: SpreadsheetData) -> SpreadsheetKnowledgeGraph:
         sheets = {}
+        row_level_data = {}
+
         for sheet_name, cell_map in spreadsheet.cells.items():
             headers = {
                 cell.col: str(cell.value).strip()
@@ -128,31 +140,24 @@ class SpreadsheetParserAdvanced:
                 if cell.row == 1 and cell.value
             }
 
+            # === COLUMN METADATA ===
             columns = {}
             for col_idx, header in headers.items():
                 col_cells = [
                     cell for cell in cell_map.values()
                     if cell.col == col_idx and cell.row > 1
                 ]
-
                 sample_values = [cell.value for cell in col_cells[:5] if cell.value not in [None, ""]]
                 first_formula_cell = next((c for c in col_cells if c.formula), None)
-                cross_refs = []
 
+                cross_refs = []
                 if first_formula_cell and first_formula_cell.formula:
                     matches = CROSS_SHEET_REGEX.findall(first_formula_cell.formula)
-                    # Extract sheet names from matches
                     cross_refs = list({m[0] or m[1] for m in matches if (m[0] or m[1])})
 
-                # Create range format for addresses (e.g., "A2:A13")
                 selected_cells = col_cells[:13]
-                if selected_cells:
-                    first_address = selected_cells[0].address
-                    last_address = selected_cells[-1].address
-                    addresses = f"{first_address}:{last_address}"
-                else:
-                    addresses = ""
-                
+                addresses = f"{selected_cells[0].address}:{selected_cells[-1].address}" if selected_cells else ""
+
                 col_meta = ColumnMetadata(
                     header=header,
                     data_type=col_cells[0].data_type if col_cells else "unknown",
@@ -166,7 +171,55 @@ class SpreadsheetParserAdvanced:
 
             sheets[sheet_name] = SheetMetadata(name=sheet_name, columns=columns)
 
-        return SpreadsheetKnowledgeGraph(title=spreadsheet.title, sheets=sheets)
+            # === ROW METADATA (for row-major use cases) ===
+            sheet_rows = {}
+            for row_idx in range(2, max(c.row for c in cell_map.values()) + 1):
+                row_cells = [
+                    cell for cell in cell_map.values()
+                    if cell.row == row_idx
+                ]
+                if not row_cells:
+                    continue
+
+                row_values = [cell.value for cell in row_cells if cell.value not in [None, ""]]
+                row_formulae = [cell.formula for cell in row_cells if cell.formula]
+                row_headers = [headers.get(cell.col, "") for cell in row_cells]
+
+                # Extract cross-sheet references from any cell
+                all_formulas = " ".join(f for f in row_formulae if f)
+                matches = CROSS_SHEET_REGEX.findall(all_formulas)
+                cross_refs = list({m[0] or m[1] for m in matches if (m[0] or m[1])})
+
+                concept = str(row_cells[0].value) if row_cells else f"Row {row_idx}"
+
+                # Convert address list to range (e.g., "A6:F6")
+                row_cells_sorted = sorted(row_cells, key=lambda c: c.col)
+                if row_cells_sorted:
+                    start_address = row_cells_sorted[0].address
+                    end_address = row_cells_sorted[-1].address
+                    address_range = f"{start_address}:{end_address}"
+                else:
+                    address_range = ""
+
+                row_meta = RowMetadata(
+                    concept=concept,
+                    sheet=sheet_name,
+                    row_number=row_idx,
+                    data_type=row_cells[1].data_type if len(row_cells) > 1 else "unknown",
+                    sample_values=row_values[:5],
+                    formulae=row_formulae,
+                    cell_addresses=address_range,
+                    col_headers=row_headers,
+                    cross_sheet_refs=cross_refs or None
+                )
+
+                sheet_rows[row_idx] = row_meta
+
+            row_level_data[sheet_name] = list(sheet_rows.values())
+
+        return SpreadsheetKnowledgeGraph(title=spreadsheet.title, sheets=sheets, rows=row_level_data)
+
+
 
 
 # 🧪 Test block
@@ -178,9 +231,20 @@ if __name__ == "__main__":
     graph = parser.build_knowledge_graph(spreadsheet)
 
     print(f"\n📊 Knowledge Graph for Spreadsheet: {graph.title}")
+
+    # Show column-wise metadata
+    print("\n🧱 COLUMN-WISE METADATA:")
     for sheet_name, sheet_meta in graph.sheets.items():
         print(f"\n--- Sheet: {sheet_name} ---")
         for col_name, col_meta in sheet_meta.columns.items():
             print(json.dumps(asdict(col_meta), indent=2))
-            #break  # Only show one column
         break  # Only show one sheet
+
+    # Show row-wise metadata
+    if hasattr(graph, "rows"):  # Ensure compatibility
+        print("\n📋 ROW-WISE METADATA:")
+        for sheet_name, row_list in graph.rows.items():
+            print(f"\n--- Sheet: {sheet_name} ---")
+            for row_meta in row_list[:5]:  # Only print first 5 rows
+                print(json.dumps(asdict(row_meta), indent=2))
+            break  # Only show one sheet
