@@ -169,19 +169,13 @@ class SpreadsheetKnowledgeGraph:
 
 ### Key Algorithms
 
-1. **Cross-Sheet Reference Detection**:
-
-   ```python
-   CROSS_SHEET_REGEX = re.compile(r"(?:'([^']+)')|(?:(\w+)![$]?[A-Z]+[$]?\d+)")
-   ```
-
-2. **Semantic Similarity Scoring**:
+1. **Semantic Similarity Scoring**:
 
    ```python
    scores = util.pytorch_cos_sim(query_embedding, column_embeddings)
    ```
 
-3. **Statistical Analysis**:
+2. **Statistical Analysis**:
    - Real-time data fetching from Google Sheets
    - Numerical value extraction and analysis
    - Min/max/mean calculations for business insights
@@ -266,7 +260,6 @@ streamlit run app_new.py
 ### Advanced Analytics
 
 - **Statistical Enhancement**: Real-time min/max/mean calculations
-- **Cross-Sheet Tracking**: Identifies relationships between worksheets
 - **Formula Interpretation**: Understands business meaning of calculations
 - **Context-Aware Ranking**: Prioritizes relevant business metrics
 
