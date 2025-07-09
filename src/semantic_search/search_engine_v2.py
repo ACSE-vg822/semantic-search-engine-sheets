@@ -5,13 +5,14 @@ import json
 import logging
 import pandas as pd
 import toml
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Optional, Union, Tuple, TypedDict
 from dataclasses import dataclass, asdict
 
 import gspread
 import streamlit as st
 from google.oauth2 import service_account
 import anthropic
+from langgraph.graph import StateGraph, END
 
 from src.data_ingestion.spreadsheet_parser_advance import SpreadsheetKnowledgeGraph, RowMetadata, ColumnMetadata
 from src.rag.retriever import SpreadsheetRetriever
@@ -19,6 +20,15 @@ from src.rag.retriever import SpreadsheetRetriever
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class SearchState(TypedDict):
+    """State schema for the LangGraph search workflow"""
+    query: str
+    retriever_results: List[Tuple]
+    plan: Optional[Dict]
+    enriched_data: List[Dict]
+    insights: Dict
+    status: str
 
 @dataclass
 class DataFetchPlan:
@@ -48,6 +58,12 @@ class QueryAnalyzerNode:
     
     def __init__(self, claude_client):
         self.client = claude_client
+    
+    def __call__(self, state: SearchState) -> SearchState:
+        """LangGraph node function for query analysis"""
+        plan = self.analyze_query(state["query"], state["retriever_results"])
+        state["plan"] = asdict(plan)
+        return state
     
     def analyze_query(self, query: str, retriever_results: List[Tuple]) -> DataFetchPlan:
         """Analyze user query and RAG results to create focused fetching plan"""
@@ -137,10 +153,25 @@ class QueryAnalyzerNode:
 class DataFetcherNode:
     """Node 2: Fetch targeted data with full context"""
     
-    def __init__(self, spreadsheet_id: str, debug: bool = False):
+    def __init__(self, spreadsheet_id: str):
         self.spreadsheet_id = spreadsheet_id
         self.client = self._setup_google_sheets_auth()
-        self.debug = debug
+    
+    def __call__(self, state: SearchState) -> SearchState:
+        """LangGraph node function for data fetching"""
+        plan_dict = state["plan"]
+        # Convert dict back to DataFetchPlan with proper object reconstruction
+        plan = DataFetchPlan(
+            target_sheets=plan_dict["target_sheets"],
+            target_concepts=plan_dict["target_concepts"],
+            analysis_type=plan_dict["analysis_type"],
+            specific_rows=[RowMetadata(**row) for row in plan_dict["specific_rows"]],
+            specific_columns=[ColumnMetadata(**col) for col in plan_dict["specific_columns"]],
+            expected_insights=plan_dict["expected_insights"]
+        )
+        enriched_data = self.fetch_targeted_data(plan)
+        state["enriched_data"] = [asdict(d) for d in enriched_data]
+        return state
     
     def _setup_google_sheets_auth(self):
         """Setup Google Sheets authentication"""
@@ -153,6 +184,13 @@ class DataFetcherNode:
     def fetch_targeted_data(self, plan: DataFetchPlan) -> List[EnrichedRowData]:
         """Fetch specific data based on the plan"""
         enriched_data = []
+        
+        # Get the live spreadsheet connection
+        try:
+            spreadsheet = self.client.open_by_key(self.spreadsheet_id)
+        except Exception as e:
+            logger.error(f"Failed to connect to spreadsheet {self.spreadsheet_id}: {e}")
+            spreadsheet = None
         
         # Check for exact matches in both rows and columns
         matching_rows = []
@@ -171,21 +209,115 @@ class DataFetcherNode:
         query_is_business_metric = any(metric in ' '.join(plan.target_concepts).lower() for metric in business_metrics)
         
         if matching_columns and query_is_business_metric:
-            # Process matching columns - convert to enriched row format
+            # Process matching columns with live data fetching
             for col_meta in matching_columns:
-                enriched_row = self._create_enriched_from_column(col_meta)
+                enriched_row = self._fetch_live_column_data(col_meta, spreadsheet)
                 enriched_data.append(enriched_row)
         
         # Only include rows if we don't have good column matches, or if rows are specifically relevant
         if not (matching_columns and query_is_business_metric):
-            # No good columns found, fall back to rows
+            # No good columns found, fall back to rows with live data fetching
             rows_to_process = matching_rows if matching_rows else plan.specific_rows[:3]
             
             for row_meta in rows_to_process:
-                enriched_row = self._create_enriched_from_metadata(row_meta)
+                enriched_row = self._fetch_live_row_data(row_meta, spreadsheet)
                 enriched_data.append(enriched_row)
             
         return enriched_data
+    
+    def _fetch_live_column_data(self, col_meta: ColumnMetadata, spreadsheet) -> EnrichedRowData:
+        """Fetch live column data from spreadsheet with fallback to cached"""
+        if spreadsheet:
+            try:
+                worksheet = spreadsheet.worksheet(col_meta.sheet)
+                
+                # Get live values from the column range
+                live_values = worksheet.get(col_meta.addresses, value_render_option='UNFORMATTED_VALUE')
+                live_formulas = worksheet.get(col_meta.addresses, value_render_option='FORMULA')
+                
+                # Flatten the values and formulas
+                flat_values = [cell for row in live_values for cell in row if cell not in [None, ""]]
+                flat_formulas = [cell for row in live_formulas for cell in row if cell and str(cell).startswith("=")]
+                
+                # Resolve cross-references if any formulas exist
+                cross_refs = {}
+                if flat_formulas:
+                    cross_refs = self._resolve_formula_references(flat_formulas, spreadsheet)
+                
+                return EnrichedRowData(
+                    first_cell_value=f"Column: {col_meta.header}",
+                    sheet=col_meta.sheet,
+                    row_number=0,  # Not applicable for columns
+                    values=flat_values,
+                    formulas=flat_formulas,
+                    headers=[col_meta.header],
+                    cell_addresses=col_meta.addresses,
+                    cross_references=cross_refs,
+                    metadata={"data_type": col_meta.data_type, "source": "live_data", "column_header": col_meta.header}
+                )
+                
+            except Exception as e:
+                logger.error(f"Failed to fetch live column data for {col_meta.header}: {e}")
+        
+        # Fallback to cached metadata
+        return self._create_enriched_from_column(col_meta)
+    
+    def _fetch_live_row_data(self, row_meta: RowMetadata, spreadsheet) -> EnrichedRowData:
+        """Fetch live row data from spreadsheet with fallback to cached"""
+        if spreadsheet:
+            try:
+                worksheet = spreadsheet.worksheet(row_meta.sheet)
+                
+                # Get live values from the row range
+                live_values = worksheet.get(row_meta.cell_addresses, value_render_option='UNFORMATTED_VALUE')
+                live_formulas = worksheet.get(row_meta.cell_addresses, value_render_option='FORMULA')
+                
+                # Flatten the values and formulas
+                flat_values = [cell for row in live_values for cell in row if cell not in [None, ""]]
+                flat_formulas = [cell for row in live_formulas for cell in row if cell and str(cell).startswith("=")]
+                
+                # Resolve cross-references if any formulas exist
+                cross_refs = {}
+                if flat_formulas:
+                    cross_refs = self._resolve_formula_references(flat_formulas, spreadsheet)
+                
+                return EnrichedRowData(
+                    first_cell_value=row_meta.first_cell_value,
+                    sheet=row_meta.sheet,
+                    row_number=row_meta.row_number,
+                    values=flat_values,
+                    formulas=flat_formulas,
+                    headers=row_meta.col_headers,
+                    cell_addresses=row_meta.cell_addresses,
+                    cross_references=cross_refs,
+                    metadata={"data_type": row_meta.data_type, "source": "live_data"}
+                )
+                
+            except Exception as e:
+                logger.error(f"Failed to fetch live row data for {row_meta.first_cell_value}: {e}")
+        
+        # Fallback to cached metadata
+        return self._create_enriched_from_metadata(row_meta)
+    
+    def _resolve_formula_references(self, formulas: List[str], spreadsheet) -> Dict[str, any]:
+        """Resolve formula references to actual values"""
+        cross_refs = {}
+        
+        for formula in formulas:
+            if "!" in formula:  # Cross-sheet reference
+                try:
+                    # Extract sheet and cell reference
+                    parts = formula.replace("=", "").replace("'", "").split("!")
+                    if len(parts) == 2:
+                        sheet_name, cell_ref = parts
+                        worksheet = spreadsheet.worksheet(sheet_name)
+                        value = worksheet.get(cell_ref, value_render_option='UNFORMATTED_VALUE')
+                        if value:
+                            cross_refs[f"{sheet_name}!{cell_ref}"] = value[0][0] if value[0] else None
+                except Exception as e:
+                    pass
+                    
+        return cross_refs
     
     def _create_enriched_from_column(self, col_meta: ColumnMetadata) -> EnrichedRowData:
         """Create enriched row data from column metadata for column-major analysis"""
@@ -215,82 +347,34 @@ class DataFetcherNode:
             metadata={"data_type": row_meta.data_type, "source": "cached_metadata"}
         )
     
-    def _enrich_row_data(self, row_meta: RowMetadata, spreadsheet) -> EnrichedRowData:
-        """Enrich row metadata with actual current data"""
-        try:
-            # Get the worksheet
-            worksheet = spreadsheet.worksheet(row_meta.sheet)
-            
-            # Parse the cell addresses to get the range
-            if ":" in row_meta.cell_addresses:
-                # Get current values from the range
-                values = worksheet.get(row_meta.cell_addresses, value_render_option='UNFORMATTED_VALUE')
-                formulas = worksheet.get(row_meta.cell_addresses, value_render_option='FORMULA')
-                
-                # Flatten the values and formulas
-                flat_values = [cell for row in values for cell in row if cell not in [None, ""]]
-                flat_formulas = [cell for row in formulas for cell in row if cell and str(cell).startswith("=")]
-                
-                # Resolve cross-references if any formulas exist
-                cross_refs = {}
-                if flat_formulas:
-                    cross_refs = self._resolve_formula_references(flat_formulas, spreadsheet)
-                
-                return EnrichedRowData(
-                    first_cell_value=row_meta.first_cell_value,
-                    sheet=row_meta.sheet,
-                    row_number=row_meta.row_number,
-                    values=flat_values,
-                    formulas=flat_formulas,
-                    headers=row_meta.col_headers,
-                    cell_addresses=row_meta.cell_addresses,
-                    cross_references=cross_refs,
-                    metadata={"data_type": row_meta.data_type}
-                )
-                
-        except Exception as e:
-            logger.error(f"Error enriching row data for {row_meta.first_cell_value}: {e}")
-            
-        # Fallback to metadata values
-        return EnrichedRowData(
-            first_cell_value=row_meta.first_cell_value,
-            sheet=row_meta.sheet,
-            row_number=row_meta.row_number,
-            values=row_meta.sample_values,
-            formulas=row_meta.formulae,
-            headers=row_meta.col_headers,
-            cell_addresses=row_meta.cell_addresses,
-            cross_references={},
-            metadata={"data_type": row_meta.data_type, "source": "cached"}
-        )
-    
-    def _resolve_formula_references(self, formulas: List[str], spreadsheet) -> Dict[str, any]:
-        """Resolve formula references to actual values"""
-        cross_refs = {}
-        
-        for formula in formulas:
-            if "!" in formula:  # Cross-sheet reference
-                try:
-                    # Extract sheet and cell reference
-                    # This is a simplified parser - could be made more robust
-                    parts = formula.replace("=", "").replace("'", "").split("!")
-                    if len(parts) == 2:
-                        sheet_name, cell_ref = parts
-                        worksheet = spreadsheet.worksheet(sheet_name)
-                        value = worksheet.get(cell_ref, value_render_option='UNFORMATTED_VALUE')
-                        if value:
-                            cross_refs[f"{sheet_name}!{cell_ref}"] = value[0][0] if value[0] else None
-                except Exception as e:
-                    pass
-                    
-        return cross_refs
+
 
 class InsightGeneratorNode:
     """Node 3: Generate insights using pandas analysis"""
     
-    def __init__(self, claude_client, debug: bool = False):
+    def __init__(self, claude_client):
         self.client = claude_client
-        self.debug = debug
+    
+    def __call__(self, state: SearchState) -> SearchState:
+        """LangGraph node function for insight generation"""
+        # Convert enriched_data dicts back to EnrichedRowData objects
+        enriched_data = [EnrichedRowData(**d) for d in state["enriched_data"]]
+        
+        # Convert plan dict back to DataFetchPlan with proper object reconstruction
+        plan_dict = state["plan"]
+        plan = DataFetchPlan(
+            target_sheets=plan_dict["target_sheets"],
+            target_concepts=plan_dict["target_concepts"],
+            analysis_type=plan_dict["analysis_type"],
+            specific_rows=[RowMetadata(**row) for row in plan_dict["specific_rows"]],
+            specific_columns=[ColumnMetadata(**col) for col in plan_dict["specific_columns"]],
+            expected_insights=plan_dict["expected_insights"]
+        )
+        
+        insights = self.generate_insights(enriched_data, plan, state["query"])
+        state["insights"] = insights
+        state["status"] = "success"
+        return state
     
     def generate_insights(self, data: List[EnrichedRowData], plan: DataFetchPlan, original_query: str) -> Dict:
         """Generate business insights from the enriched data"""
@@ -469,27 +553,44 @@ class InsightGeneratorNode:
             return f"Generated insights from {insights['raw_data_summary']['total_concepts']} concepts across {len(insights['raw_data_summary']['sheets_involved'])} sheets."
 
 class SearchEngineV2:
-    """Main LangGraph-based search engine"""
+    """LangGraph-based search engine"""
     
-    def __init__(self, knowledge_graph: SpreadsheetKnowledgeGraph, spreadsheet_id: str, debug: bool = False):
+    def __init__(self, knowledge_graph: SpreadsheetKnowledgeGraph, spreadsheet_id: str):
         self.kg = knowledge_graph
         self.spreadsheet_id = spreadsheet_id
-        self.debug = debug
-        
-        # Configure logging level based on debug flag
-        if self.debug:
-            logger.setLevel(logging.DEBUG)
         
         # Initialize existing retriever for initial filtering
-        self.retriever = SpreadsheetRetriever(knowledge_graph, use_embeddings=True, debug=debug)
+        self.retriever = SpreadsheetRetriever(knowledge_graph, use_embeddings=True)
         
         # Setup Claude client
         self.claude_client = self._setup_claude_client()
         
         # Initialize nodes
         self.query_analyzer = QueryAnalyzerNode(self.claude_client)
-        self.data_fetcher = DataFetcherNode(spreadsheet_id, debug=debug)
-        self.insight_generator = InsightGeneratorNode(self.claude_client, debug=debug)
+        self.data_fetcher = DataFetcherNode(spreadsheet_id)
+        self.insight_generator = InsightGeneratorNode(self.claude_client)
+        
+        # Create LangGraph workflow
+        self.workflow = self._create_workflow()
+    
+    def _create_workflow(self) -> StateGraph:
+        """Create the LangGraph workflow"""
+        # Initialize the graph
+        workflow = StateGraph(SearchState)
+        
+        # Add nodes
+        workflow.add_node("query_analyzer", self.query_analyzer)
+        workflow.add_node("data_fetcher", self.data_fetcher)
+        workflow.add_node("insight_generator", self.insight_generator)
+        
+        # Define the flow
+        workflow.set_entry_point("query_analyzer")
+        workflow.add_edge("query_analyzer", "data_fetcher")
+        workflow.add_edge("data_fetcher", "insight_generator")
+        workflow.add_edge("insight_generator", END)
+        
+        # Compile the workflow
+        return workflow.compile()
     
     def _setup_claude_client(self):
         """Setup Claude API client"""
@@ -517,22 +618,26 @@ class SearchEngineV2:
     def search(self, query: str) -> Dict:
         """Main search method using LangGraph pipeline"""
         
-        # Step 1: Use existing RAG retriever for initial filtering
+        # Use existing RAG retriever for initial filtering
         retriever_results = self.retriever.retrieve(query, top_k=10)
         
-        # Step 2: Query analysis and planning
-        plan = self.query_analyzer.analyze_query(query, retriever_results)
+        # Initialize the state
+        initial_state: SearchState = {
+            "query": query,
+            "retriever_results": retriever_results,
+            "plan": None,
+            "enriched_data": [],
+            "insights": {},
+            "status": "pending"
+        }
         
-        # Step 3: Targeted data fetching
-        enriched_data = self.data_fetcher.fetch_targeted_data(plan)
-        
-        # Step 4: Insight generation
-        insights = self.insight_generator.generate_insights(enriched_data, plan, query)
+        # Run the LangGraph workflow
+        final_state = self.workflow.invoke(initial_state)
         
         return {
-            "query": query,
-            "plan": asdict(plan),
-            "enriched_data": [asdict(d) for d in enriched_data],
-            "insights": insights,
-            "status": "success"
+            "query": final_state["query"],
+            "plan": final_state["plan"],
+            "enriched_data": final_state["enriched_data"],
+            "insights": final_state["insights"],
+            "status": final_state["status"]
         } 

@@ -48,7 +48,7 @@ def build_and_cache_v2_search_engine(sheet_id, sheet_name):
             st.session_state.current_sheet_name = sheet_name
             
         with st.spinner("🚀 Initializing SearchEngineV2..."):
-            search_engine = SearchEngineV2(knowledge_graph, sheet_id, debug=False)  # Clean mode for UI
+            search_engine = SearchEngineV2(knowledge_graph, sheet_id)
             st.session_state.search_engine_v2 = search_engine
             
         st.success(f"✅ SearchEngineV2 ready for: {knowledge_graph.title}")

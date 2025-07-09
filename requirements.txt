@@ -13,3 +13,4 @@ plotly
 anthropic
 toml
 sentence-transformers
+langgraph
