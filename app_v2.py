@@ -14,34 +14,14 @@ def display_v2_search_results(results):
         st.error("❌ Search failed")
         return
     
-    # Display the plan that was created
-    plan = results.get("plan", {})
-    insights = results.get("insights", {})
     enriched_data = results.get("enriched_data", [])
-    
-    # Show analysis summary
-    st.markdown("### 📊 Analysis Summary")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Analysis Type", plan.get("analysis_type", "N/A").title())
-    with col2:
-        st.metric("Concepts Found", len(enriched_data))
-    with col3:
-        sheets_involved = insights.get("raw_data_summary", {}).get("sheets_involved", [])
-        st.metric("Sheets Analyzed", len(sheets_involved))
-    
-    # Show business insights
-    if "business_narrative" in insights:
-        st.markdown("### 💡 Business Insights")
-        st.info(insights["business_narrative"])
     
     # Show detailed findings
     if enriched_data:
         st.markdown("### 🔍 Detailed Findings")
         
         for i, data in enumerate(enriched_data, 1):
-            with st.expander(f"📌 {data['concept']} | {data['sheet']}"):
+            with st.expander(f"📌 {data['first_cell_value']} | {data['sheet']}"):
                 st.markdown(f"**📋 Sheet:** `{data['sheet']}`")
                 st.markdown(f"**📍 Location:** `{data['cell_addresses']}`")
                 st.markdown(f"**📊 Values:** {data['values']}")
@@ -53,17 +33,6 @@ def display_v2_search_results(results):
                     st.markdown("**🔗 Cross References:**")
                     for ref, value in data['cross_references'].items():
                         st.markdown(f"  - `{ref}`: {value}")
-    
-    # Show pandas analysis if available
-    if "pandas_analysis" in insights and insights["pandas_analysis"]:
-        st.markdown("### 📈 Statistical Analysis")
-        
-        for analysis_type, results_data in insights["pandas_analysis"].items():
-            with st.expander(f"📊 {analysis_type.replace('_', ' ').title()}"):
-                if isinstance(results_data, dict):
-                    st.json(results_data)
-                else:
-                    st.write(results_data)
 
 def build_and_cache_v2_search_engine(sheet_id, sheet_name):
     """Build and cache the SearchEngineV2 for the selected spreadsheet."""
@@ -79,7 +48,7 @@ def build_and_cache_v2_search_engine(sheet_id, sheet_name):
             st.session_state.current_sheet_name = sheet_name
             
         with st.spinner("🚀 Initializing SearchEngineV2..."):
-            search_engine = SearchEngineV2(knowledge_graph, sheet_id)
+            search_engine = SearchEngineV2(knowledge_graph, sheet_id, debug=False)  # Clean mode for UI
             st.session_state.search_engine_v2 = search_engine
             
         st.success(f"✅ SearchEngineV2 ready for: {knowledge_graph.title}")
@@ -252,21 +221,21 @@ if search_engine:
     # Query input
     st.markdown("## 🔍 Advanced Semantic Search")
     
-    # Sample questions for V2
-    st.markdown("### 💡 Try these advanced queries:")
+    # Sample questions
+    st.markdown("### 💡 Try these sample questions:")
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("📈 What are the growth trends?", key="sample1"):
-            st.session_state.current_query = "What are the growth trends?"
-        if st.button("💰 Find all revenue calculations", key="sample2"):
+        if st.button("💰 Find all revenue calculations", key="sample1"):
             st.session_state.current_query = "Find all revenue calculations"
+        if st.button("🔧 Show me cost-related formulas", key="sample2"):
+            st.session_state.current_query = "Show me cost-related formulas"
     
     with col2:
-        if st.button("📊 Show me profit margins", key="sample3"):
-            st.session_state.current_query = "Show me profit margins"
-        if st.button("🔍 Revenue vs expenses comparison", key="sample4"):
-            st.session_state.current_query = "Revenue vs expenses comparison"
+        if st.button("📊 Where are my margin analyses?", key="sample3"):
+            st.session_state.current_query = "Where are my margin analyses?"
+        if st.button("📈 What percentage calculations do I have?", key="sample4"):
+            st.session_state.current_query = "What percentage calculations do I have?"
     
     # Query input with current query as value
     query = st.text_input("Enter your semantic query:", value=st.session_state.current_query)
@@ -292,16 +261,4 @@ if search_engine:
             
             # Show more details for debugging
             with st.expander("🔍 Error Details"):
-                st.code(str(e))
-
-# Add footer info
-st.markdown("---")
-st.markdown("### ℹ️ About SearchEngine V2")
-st.markdown("""
-**Key Features:**
-- 🧠 **LangGraph Pipeline**: 3-node architecture (Query Analysis → Data Fetching → Insight Generation)
-- 📊 **Pandas Analysis**: Statistical calculations and trend analysis
-- 🤖 **Claude Integration**: Business narrative generation
-- 🔍 **Smart Data Fetching**: Focused retrieval based on query analysis
-- 📈 **Growth Trends**: Automatic percentage change calculations
-""") 
+                st.code(str(e)) 

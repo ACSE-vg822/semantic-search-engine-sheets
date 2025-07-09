@@ -135,7 +135,7 @@ class QueryEngine:
         print(f"\n🔍 Debug: Found {len(top_results)} total results")
         for metadata, score, entry_type in top_results:
             if entry_type == "row":
-                print(f"  Row: {metadata.concept} (score: {score:.3f})")
+                print(f"  Row: {metadata.first_cell_value} (score: {score:.3f})")
             elif entry_type == "column":
                 print(f"  Column: {metadata.header} (score: {score:.3f})")
         

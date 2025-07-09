@@ -44,12 +44,12 @@ class SpreadsheetRetriever:
         # Row-based entries
         for sheet_name, rows in self.kg.rows.items():
             for row_meta in rows:
-                text = f"Row concept: {row_meta.concept} ({row_meta.data_type}) " + " ".join(str(v) for v in row_meta.sample_values)
+                text = f"Row concept: {row_meta.first_cell_value} ({row_meta.data_type}) " + " ".join(str(v) for v in row_meta.sample_values)
                 entries.append({
                     "type": "row",
                     "text": text,
                     "sheet": sheet_name,
-                    "name": row_meta.concept,
+                    "name": row_meta.first_cell_value,
                     "metadata": row_meta
                 })
 
@@ -81,7 +81,7 @@ class SpreadsheetRetriever:
         if self.debug:
             print("\n[DEBUG] Raw results:")
             for meta, score, typ in results:
-                label = meta.header if typ == "column" else meta.concept
+                label = meta.header if typ == "column" else meta.first_cell_value
                 print(f"{meta.sheet} -> {label} [{typ}] : {score:.3f}")
 
         return results

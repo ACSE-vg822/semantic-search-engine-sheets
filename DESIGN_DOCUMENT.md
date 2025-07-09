@@ -103,7 +103,7 @@ class ColumnMetadata:
 
 @dataclass
 class RowMetadata:
-    concept: str                 # Business concept (first column value)
+    first_cell_value: str        # Business concept (first column value)
     sheet: str                   # Parent sheet
     row_number: int             # Row position
     data_type: str              # Dominant data type

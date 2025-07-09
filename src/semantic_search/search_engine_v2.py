@@ -38,7 +38,7 @@ class DataFetchPlan:
 @dataclass
 class EnrichedRowData:
     """Row data with full context and resolved references"""
-    concept: str
+    first_cell_value: str
     sheet: str
     row_number: int
     values: List[Union[str, float, int]]
@@ -116,7 +116,7 @@ class QueryAnalyzerNode:
             # Fallback plan
             return DataFetchPlan(
                 target_sheets=list(set([r.sheet for r in rows])),
-                target_concepts=[r.concept for r in rows[:3]],
+                target_concepts=[r.first_cell_value for r in rows[:3]],
                 analysis_type="summary",
                 specific_rows=rows,
                 specific_columns=columns,
@@ -130,7 +130,7 @@ class QueryAnalyzerNode:
         if rows:
             summary_parts.append("Available Row Concepts:")
             for row in rows[:5]:  # Limit to prevent token overflow
-                summary_parts.append(f"  - {row.concept} ({row.sheet}) - values: {row.sample_values[:3]}")
+                summary_parts.append(f"  - {row.first_cell_value} ({row.sheet}) - values: {row.sample_values[:3]}")
         
         if columns:
             summary_parts.append("\nAvailable Columns:")
@@ -142,9 +142,10 @@ class QueryAnalyzerNode:
 class DataFetcherNode:
     """Node 2: Fetch targeted data with full context"""
     
-    def __init__(self, spreadsheet_id: str):
+    def __init__(self, spreadsheet_id: str, debug: bool = False):
         self.spreadsheet_id = spreadsheet_id
         self.client = self._setup_google_sheets_auth()
+        self.debug = debug
     
     def _setup_google_sheets_auth(self):
         """Setup Google Sheets authentication"""
@@ -158,30 +159,30 @@ class DataFetcherNode:
         """Fetch specific data based on the plan"""
         enriched_data = []
         
-        print(f"   🔍 Debug: Plan target concepts: {plan.target_concepts}")
-        print(f"   🔍 Debug: Available row concepts: {[r.concept for r in plan.specific_rows]}")
-        print(f"   🔍 Debug: Available column concepts: {[c.header for c in plan.specific_columns]}")
+        logger.debug(f"   �� Debug: Plan target concepts: {plan.target_concepts}")
+        logger.debug(f"   🔍 Debug: Available row concepts: {[r.first_cell_value for r in plan.specific_rows]}")
+        logger.debug(f"   🔍 Debug: Available column concepts: {[c.header for c in plan.specific_columns]}")
         
         # Check for exact matches in both rows and columns
         matching_rows = []
         matching_columns = []
         
         for row_meta in plan.specific_rows:
-            if any(keyword.lower() in row_meta.concept.lower() for keyword in plan.target_concepts):
+            if any(keyword.lower() in row_meta.first_cell_value.lower() for keyword in plan.target_concepts):
                 matching_rows.append(row_meta)
         
         for col_meta in plan.specific_columns:
             if any(keyword.lower() in col_meta.header.lower() for keyword in plan.target_concepts):
                 matching_columns.append(col_meta)
         
-        print(f"   🔍 Debug: Matching rows: {len(matching_rows)}, Matching columns: {len(matching_columns)}")
+        logger.debug(f"   🔍 Debug: Matching rows: {len(matching_rows)}, Matching columns: {len(matching_columns)}")
         
         # Prioritize columns for typical business metrics (revenue, profit, cost, etc.)
         business_metrics = ['revenue', 'profit', 'cost', 'expense', 'sales', 'income', 'margin', 'growth']
         query_is_business_metric = any(metric in ' '.join(plan.target_concepts).lower() for metric in business_metrics)
         
         if matching_columns and query_is_business_metric:
-            print(f"   📊 Processing {len(matching_columns)} column(s) for business metrics")
+            logger.debug(f"   📊 Processing {len(matching_columns)} column(s) for business metrics")
             # Process matching columns - convert to enriched row format
             for col_meta in matching_columns:
                 enriched_row = self._create_enriched_from_column(col_meta)
@@ -191,21 +192,21 @@ class DataFetcherNode:
         if not (matching_columns and query_is_business_metric):
             # No good columns found, fall back to rows
             rows_to_process = matching_rows if matching_rows else plan.specific_rows[:3]
-            print(f"   📡 No column matches, processing {len(rows_to_process)} rows")
+            logger.debug(f"   📡 No column matches, processing {len(rows_to_process)} rows")
             
             for row_meta in rows_to_process:
-                print(f"   📡 Processing row: {row_meta.concept} from {row_meta.sheet}")
+                logger.debug(f"   📡 Processing row: {row_meta.first_cell_value} from {row_meta.sheet}")
                 enriched_row = self._create_enriched_from_metadata(row_meta)
                 enriched_data.append(enriched_row)
         else:
-            print(f"   ✅ Found good column matches, skipping individual rows")
+            logger.debug(f"   ✅ Found good column matches, skipping individual rows")
             
         return enriched_data
     
     def _create_enriched_from_column(self, col_meta: ColumnMetadata) -> EnrichedRowData:
         """Create enriched row data from column metadata for column-major analysis"""
         return EnrichedRowData(
-            concept=f"Column: {col_meta.header}",  # Make it clear this is a column
+            first_cell_value=f"Column: {col_meta.header}",  # Make it clear this is a column
             sheet=col_meta.sheet,
             row_number=0,  # Not applicable for columns
             values=col_meta.sample_values,
@@ -219,7 +220,7 @@ class DataFetcherNode:
     def _create_enriched_from_metadata(self, row_meta: RowMetadata) -> EnrichedRowData:
         """Create enriched row data from metadata when live fetching fails"""
         return EnrichedRowData(
-            concept=row_meta.concept,
+            first_cell_value=row_meta.first_cell_value,
             sheet=row_meta.sheet,
             row_number=row_meta.row_number,
             values=row_meta.sample_values,
@@ -252,7 +253,7 @@ class DataFetcherNode:
                     cross_refs = self._resolve_formula_references(flat_formulas, spreadsheet)
                 
                 return EnrichedRowData(
-                    concept=row_meta.concept,
+                    first_cell_value=row_meta.first_cell_value,
                     sheet=row_meta.sheet,
                     row_number=row_meta.row_number,
                     values=flat_values,
@@ -264,11 +265,11 @@ class DataFetcherNode:
                 )
                 
         except Exception as e:
-            logger.error(f"Error enriching row data for {row_meta.concept}: {e}")
+            logger.error(f"Error enriching row data for {row_meta.first_cell_value}: {e}")
             
         # Fallback to metadata values
         return EnrichedRowData(
-            concept=row_meta.concept,
+            first_cell_value=row_meta.first_cell_value,
             sheet=row_meta.sheet,
             row_number=row_meta.row_number,
             values=row_meta.sample_values,
@@ -303,8 +304,9 @@ class DataFetcherNode:
 class InsightGeneratorNode:
     """Node 3: Generate insights using pandas analysis"""
     
-    def __init__(self, claude_client):
+    def __init__(self, claude_client, debug: bool = False):
         self.client = claude_client
+        self.debug = debug
     
     def generate_insights(self, data: List[EnrichedRowData], plan: DataFetchPlan, original_query: str) -> Dict:
         """Generate business insights from the enriched data"""
@@ -344,7 +346,7 @@ class InsightGeneratorNode:
         
         for row_data in data:
             # Use concept as row index
-            concept = row_data.concept
+            concept = row_data.first_cell_value
             
             # Create columns from headers and values
             if len(row_data.headers) == len(row_data.values):
@@ -393,7 +395,7 @@ class InsightGeneratorNode:
         metrics = {}
         
         for row_data in data:
-            concept = row_data.concept
+            concept = row_data.first_cell_value
             
             # Extract numeric values
             numeric_values = [v for v in row_data.values if isinstance(v, (int, float))]
@@ -417,10 +419,10 @@ class InsightGeneratorNode:
         
         for row_data in data:
             if row_data.formulas or row_data.cross_references:
-                explanations[row_data.concept] = {
+                explanations[row_data.first_cell_value] = {
                     "formulas": row_data.formulas,
                     "cross_references": row_data.cross_references,
-                    "explanation": f"This {row_data.concept} calculation involves {len(row_data.formulas)} formulas and {len(row_data.cross_references)} cross-references"
+                    "explanation": f"This {row_data.first_cell_value} calculation involves {len(row_data.formulas)} formulas and {len(row_data.cross_references)} cross-references"
                 }
                 
         return explanations
@@ -449,7 +451,7 @@ class InsightGeneratorNode:
         return {
             "total_concepts": len(data),
             "sheets_involved": list(set([d.sheet for d in data])),
-            "concepts_found": [d.concept for d in data],
+            "concepts_found": [d.first_cell_value for d in data],
             "has_formulas": sum(1 for d in data if d.formulas),
             "has_cross_references": sum(1 for d in data if d.cross_references)
         }
@@ -485,20 +487,25 @@ class InsightGeneratorNode:
 class SearchEngineV2:
     """Main LangGraph-based search engine"""
     
-    def __init__(self, knowledge_graph: SpreadsheetKnowledgeGraph, spreadsheet_id: str):
+    def __init__(self, knowledge_graph: SpreadsheetKnowledgeGraph, spreadsheet_id: str, debug: bool = False):
         self.kg = knowledge_graph
         self.spreadsheet_id = spreadsheet_id
+        self.debug = debug
+        
+        # Configure logging level based on debug flag
+        if self.debug:
+            logger.setLevel(logging.DEBUG)
         
         # Initialize existing retriever for initial filtering
-        self.retriever = SpreadsheetRetriever(knowledge_graph, use_embeddings=True, debug=False)
+        self.retriever = SpreadsheetRetriever(knowledge_graph, use_embeddings=True, debug=debug)
         
         # Setup Claude client
         self.claude_client = self._setup_claude_client()
         
         # Initialize nodes
         self.query_analyzer = QueryAnalyzerNode(self.claude_client)
-        self.data_fetcher = DataFetcherNode(spreadsheet_id)
-        self.insight_generator = InsightGeneratorNode(self.claude_client)
+        self.data_fetcher = DataFetcherNode(spreadsheet_id, debug=debug)
+        self.insight_generator = InsightGeneratorNode(self.claude_client, debug=debug)
     
     def _setup_claude_client(self):
         """Setup Claude API client"""
@@ -529,30 +536,31 @@ class SearchEngineV2:
     def search(self, query: str) -> Dict:
         """Main search method using LangGraph pipeline"""
         
-        print(f"\n🔍 LangGraph Search Pipeline for: '{query}'")
+        logger.info(f"\n🔍 LangGraph Search Pipeline for: '{query}'")
         
         # Step 1: Use existing RAG retriever for initial filtering
-        print("📡 Step 1: Initial filtering with RAG retriever...")
+        logger.info("📡 Step 1: Initial filtering with RAG retriever...")
         retriever_results = self.retriever.retrieve(query, top_k=10)
-        print(f"   Found {len(retriever_results)} initial candidates")
+        logger.info(f"   Found {len(retriever_results)} initial candidates")
         
         # Step 2: Query analysis and planning
-        print("🧠 Step 2: Query analysis and data planning...")
+        logger.info("🧠 Step 2: Query analysis and data planning...")
         plan = self.query_analyzer.analyze_query(query, retriever_results)
-        print(f"   Plan: {plan.analysis_type} analysis of {len(plan.target_concepts)} concepts")
+        logger.info(f"   Plan: {plan.analysis_type} analysis of {len(plan.target_concepts)} concepts")
         
         # Step 3: Targeted data fetching
-        print("📊 Step 3: Fetching targeted data...")
+        logger.info("📊 Step 3: Fetching targeted data...")
         enriched_data = self.data_fetcher.fetch_targeted_data(plan)
-        print(f"   Fetched {len(enriched_data)} enriched data rows")
+        logger.info(f"   Fetched {len(enriched_data)} enriched data rows")
         
         # Step 4: Insight generation
-        print("🔬 Step 4: Generating insights with pandas...")
+        logger.info("🔬 Step 4: Generating insights with pandas...")
         insights = self.insight_generator.generate_insights(enriched_data, plan, query)
-        print("   Analysis complete!")
+        logger.info("   Analysis complete!")
         
-        # NEW: Print detailed breakdown
-        self._print_detailed_results(enriched_data, insights, plan)
+        # Only show detailed breakdown in debug mode
+        if self.debug:
+            self._print_detailed_results(enriched_data, insights, plan)
         
         return {
             "query": query,
@@ -565,157 +573,47 @@ class SearchEngineV2:
     def _print_detailed_results(self, enriched_data: List[EnrichedRowData], insights: Dict, plan: DataFetchPlan):
         """Print detailed breakdown of what was found and analyzed"""
         
-        print(f"\n{'='*80}")
-        print(f"📋 DETAILED RESULTS BREAKDOWN")
-        print(f"{'='*80}")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📋 DETAILED RESULTS BREAKDOWN")
+        logger.info(f"{'='*80}")
         
         # Show what concepts were actually found
-        print(f"\n🎯 CONCEPTS ANALYZED:")
+        logger.info(f"\n🎯 CONCEPTS ANALYZED:")
         for i, data in enumerate(enriched_data, 1):
-            print(f"   {i}. {data.concept}")
-            print(f"      📍 Location: {data.sheet}!{data.cell_addresses}")
-            print(f"      📊 Values: {data.values}")
+            logger.info(f"   {i}. {data.first_cell_value}")
+            logger.info(f"      📍 Location: {data.sheet}!{data.cell_addresses}")
+            logger.info(f"      📊 Values: {data.values}")
             if data.formulas:
-                print(f"      🧮 Formulas: {data.formulas}")
+                logger.info(f"      🧮 Formulas: {data.formulas}")
             if data.cross_references:
-                print(f"      🔗 References: {data.cross_references}")
-            print()
+                logger.info(f"      🔗 References: {data.cross_references}")
+            logger.info("")
         
         # Show pandas dataframe structure
         if enriched_data:
-            print(f"🐼 PANDAS DATAFRAME STRUCTURE:")
+            logger.info(f"🐼 PANDAS DATAFRAME STRUCTURE:")
             df = self.insight_generator._create_analysis_dataframe(enriched_data)
-            print(f"   Shape: {df.shape} (rows x columns)")
-            print(f"   Index (Concepts): {list(df.index)}")
-            print(f"   Columns: {list(df.columns)}")
-            print(f"\n   📊 DATA:")
-            print(df.to_string())
-            print()
+            logger.info(f"   Shape: {df.shape} (rows x columns)")
+            logger.info(f"   Index (Concepts): {list(df.index)}")
+            logger.info(f"   Columns: {list(df.columns)}")
+            logger.info(f"\n   📊 DATA:")
+            logger.info(df.to_string())
+            logger.info("")
         
         # Show detailed analysis results
         if 'pandas_analysis' in insights:
-            print(f"🔬 DETAILED ANALYSIS RESULTS:")
+            logger.info(f"🔬 DETAILED ANALYSIS RESULTS:")
             for analysis_type, results in insights['pandas_analysis'].items():
-                print(f"\n   📈 {analysis_type.upper()}:")
+                logger.info(f"\n   📈 {analysis_type.upper()}:")
                 if isinstance(results, dict):
                     for key, value in results.items():
-                        print(f"      {key}: {value}")
+                        logger.info(f"      {key}: {value}")
                 else:
-                    print(f"      {results}")
+                    logger.info(f"      {results}")
         
         # Show the business context
         if 'business_narrative' in insights:
-            print(f"\n💡 BUSINESS INSIGHTS:")
-            print(f"   {insights['business_narrative']}")
+            logger.info(f"\n�� BUSINESS INSIGHTS:")
+            logger.info(f"   {insights['business_narrative']}")
         
-        print(f"\n{'='*80}")
-
-# 🧪 Test block
-if __name__ == "__main__":
-    import sys
-    
-    print("🧪 SearchEngineV2 Terminal Tester")
-    print("=" * 50)
-    
-    try:
-        from src.data_ingestion.spreadsheet_parser_advance import SpreadsheetParserAdvanced
-        
-        # Use the test spreadsheet ID
-        TEST_SPREADSHEET_ID = "1EvWvbiJIIIASse3b9iHP1JAOTmnw3Xur7oRpG-o9Oxc"
-        
-        print("📋 Building knowledge graph...")
-        parser = SpreadsheetParserAdvanced()
-        spreadsheet_data = parser.parse(TEST_SPREADSHEET_ID)
-        knowledge_graph = parser.build_knowledge_graph(spreadsheet_data)
-        
-        print("🚀 Initializing SearchEngineV2...")
-        search_engine = SearchEngineV2(knowledge_graph, TEST_SPREADSHEET_ID)
-        print("✅ Ready for queries!\n")
-        
-        # Check if query provided as command line argument
-        if len(sys.argv) > 1:
-            query = " ".join(sys.argv[1:])
-            print(f"🔍 Running query from command line: '{query}'")
-            results = search_engine.search(query)
-        else:
-            # Interactive mode or predefined queries
-            print("Choose an option:")
-            print("1. Interactive query mode")
-            print("2. Run sample queries")
-            print("3. Quick test query")
-            
-            try:
-                choice = input("\nEnter choice (1-3) or press Enter for quick test: ").strip()
-            except (KeyboardInterrupt, EOFError):
-                choice = "3"
-            
-            if choice == "1":
-                # Interactive mode
-                print("\n🔍 Interactive Query Mode")
-                print("Type your queries below (press Ctrl+C to exit):")
-                print("-" * 40)
-                
-                while True:
-                    try:
-                        query = input("\n🔍 Query: ").strip()
-                        if not query:
-                            continue
-                        
-                        print(f"\n{'='*60}")
-                        results = search_engine.search(query)
-                        print(f"{'='*60}")
-                        
-                    except (KeyboardInterrupt, EOFError):
-                        print("\n👋 Goodbye!")
-                        break
-                    except Exception as e:
-                        print(f"❌ Error: {str(e)}")
-            
-            elif choice == "2":
-                # Sample queries
-                sample_queries = [
-                    "Find all revenue calculations",
-                    "Show me profit margins", 
-                    "What are the growth trends?",
-                    "Revenue vs expenses comparison",
-                    "Cost analysis formulas"
-                ]
-                
-                print(f"\n🔍 Running {len(sample_queries)} sample queries...")
-                
-                for i, query in enumerate(sample_queries, 1):
-                    print(f"\n{'='*60}")
-                    print(f"Sample Query {i}/{len(sample_queries)}: '{query}'")
-                    print('='*60)
-                    
-                    try:
-                        results = search_engine.search(query)
-                    except Exception as e:
-                        print(f"❌ Error: {str(e)}")
-                    
-                    # Pause between queries (optional)
-                    if i < len(sample_queries):
-                        try:
-                            input("\nPress Enter to continue to next query (or Ctrl+C to stop)...")
-                        except (KeyboardInterrupt, EOFError):
-                            break
-            
-            else:
-                # Quick test (default)
-                query = "Find all revenue calculations"
-                print(f"🔍 Running quick test query: '{query}'")
-                results = search_engine.search(query)
-        
-        print(f"\n✅ SearchEngineV2 testing complete!")
-        
-    except KeyboardInterrupt:
-        print("\n👋 Interrupted by user. Goodbye!")
-    except Exception as e:
-        print(f"❌ Failed to initialize: {str(e)}")
-        logger.error(f"Initialization error: {e}", exc_info=True)
-        
-    print("\n📚 Usage Examples:")
-    print("  python src/semantic_search/search_engine_v2.py")
-    print("  python src/semantic_search/search_engine_v2.py 'Find revenue calculations'")
-    print("  python src/semantic_search/search_engine_v2.py 'Show profit margins'")
-    print("  python src/semantic_search/search_engine_v2.py 'What are the growth trends?'") 
+        logger.info(f"\n{'='*80}") 

@@ -48,7 +48,7 @@ class ColumnMetadata:
 
 @dataclass
 class RowMetadata:
-    concept: str                     # Value in first column (e.g. A4 = "Gross Profit")
+    first_cell_value: str                     # Value in first column (e.g. A4 = "Gross Profit")
     sheet: str
     row_number: int
     data_type: str
@@ -190,7 +190,7 @@ class SpreadsheetParserAdvanced:
                 matches = CROSS_SHEET_REGEX.findall(all_formulas)
                 cross_refs = list({m[0] or m[1] for m in matches if (m[0] or m[1])})
 
-                concept = str(row_cells[0].value) if row_cells else f"Row {row_idx}"
+                first_cell_value = str(row_cells[0].value) if row_cells else f"Row {row_idx}"
 
                 # Convert address list to range (e.g., "A6:F6")
                 row_cells_sorted = sorted(row_cells, key=lambda c: c.col)
@@ -202,7 +202,7 @@ class SpreadsheetParserAdvanced:
                     address_range = ""
 
                 row_meta = RowMetadata(
-                    concept=concept,
+                    first_cell_value=first_cell_value,
                     sheet=sheet_name,
                     row_number=row_idx,
                     data_type=row_cells[1].data_type if len(row_cells) > 1 else "unknown",
