@@ -37,6 +37,8 @@ A semantic search engine that understands spreadsheet content conceptually, allo
    universe_domain = "googleapis.com"
    ```
 
+   **Note:** To use a different LLM instead of Claude, modify the client creation in the code files.
+
 3. **Run the application:**
    ```bash
    streamlit run app_new.py
