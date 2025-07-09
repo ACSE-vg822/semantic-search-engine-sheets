@@ -41,20 +41,31 @@ def normalize_formula_display(formula):
 def display_search_results(parsed_results):
     """Display the parsed search results in Streamlit."""
     for i, res in enumerate(parsed_results, 1):
-        with st.expander(f"📌 Result {i}: {res.get('concept_name', 'N/A')} in sheet '{res.get('sheet', 'N/A')}'"):
-            st.markdown(f"**Header:** `{res.get('header', 'N/A')}`")
-            st.markdown(f"**Cell Range:** `{res.get('cell_range', 'N/A')}`")
+        # Simple title with just the header and sheet info
+        header = res.get('header', 'N/A')
+        sheet_name = res.get('sheet', 'N/A')
+        
+        title = f"📌 Result {i}: {header} | {sheet_name}"
+        
+        with st.expander(title):
+            st.markdown(f"**📋 Sheet:** `{sheet_name}`")
+            st.markdown(f"**📊 Header:** `{header}`")
+            st.markdown(f"**📍 Cell Range:** `{res.get('cell_range', 'N/A')}`")
+            
+            # Formula Information
             if res.get('formula'):
                 normalized_formula = normalize_formula_display(res['formula'])
-                st.markdown(f"**Formula:** {normalized_formula}", unsafe_allow_html=True)
+                st.markdown(f"**🔢 Formula:** {normalized_formula}", unsafe_allow_html=True)
             else:
-                st.markdown("*No formula*")
-            if res.get('explanation'):
-                st.markdown(f"**Explanation:** {res['explanation']}")
+                st.markdown("**🔢 Formula:** *No formula*")
             
-            # Show cross-sheet references if available
-            if 'cross_sheet_refs' in res and res['cross_sheet_refs']:
-                st.markdown(f"**Cross-sheet references:** {', '.join(res['cross_sheet_refs'])}")
+            # Detailed Explanation
+            if res.get('explanation'):
+                st.markdown(f"**📝 Explanation:** {res['explanation']}")
+            
+            # Cross-sheet references (if available)
+            if res.get('cross_sheet_refs') and res['cross_sheet_refs']:
+                st.markdown(f"**🔄 Cross-sheet references:** {', '.join([f'`{ref}`' for ref in res['cross_sheet_refs']])}")
 
 def build_and_cache_knowledge_graph(sheet_id, sheet_name):
     """Build and cache the knowledge graph for the selected spreadsheet."""

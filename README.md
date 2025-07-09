@@ -188,14 +188,6 @@ class SpreadsheetKnowledgeGraph:
 pip install -r requirements.txt
 ```
 
-**Required Dependencies**:
-
-- `streamlit` - Web interface
-- `gspread` - Google Sheets API
-- `anthropic` - Claude AI integration
-- `sentence-transformers` - Semantic embeddings
-- `google-auth` - Authentication
-
 ### Configuration
 
 1. **Claude API**:
@@ -211,7 +203,7 @@ pip install -r requirements.txt
 
    ```toml
    [google_credentials]
-   # Your service account JSON here
+   # Your service account credentials here
    ```
 
 ### Running the Application
