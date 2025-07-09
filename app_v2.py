@@ -30,7 +30,6 @@ def display_v2_search_results(results):
             
             with col1:
                 st.markdown(f"**🎯 Operation:** {calculation_result.get('operation', 'Unknown')}")
-                st.markdown(f"**💡 Explanation:** {calculation_result.get('explanation', 'No explanation available')}")
                 
                 # Show the result prominently
                 result_value = calculation_result.get('result')

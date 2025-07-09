@@ -67,6 +67,13 @@ class QueryAnalyzerNode:
         - "calculate": Use when user wants to COMPUTE new values or perform mathematical operations
           Examples: "calculate max revenue", "sum all costs", "what's the average profit margin"
         
+        SHEET FILTERING RULES:
+        - Extract specific sheet names from the user query when mentioned
+        - Common patterns: "in [sheet]", "from [sheet]", "[metric] in [sheet]"
+        - Examples: "revenue in product performance" → target_sheets: ["Product Performance"]
+        - Examples: "sales from overview" → target_sheets: ["Sales Overview"]  
+        - If no specific sheet mentioned, leave target_sheets empty []
+        
         For data_explanations, provide a natural language explanation for each relevant row/column 
         explaining WHY it matches the user's query and what insights it can provide.
         Use the exact keys shown in the available data (like "row_Sheet1_Revenue", "col_Sheet1_Actual_Revenue").
@@ -84,7 +91,10 @@ class QueryAnalyzerNode:
         Available Data:
         {available_data}
         
+        Available Sheets: {list(set([r.sheet for r in rows] + [c.sheet for c in columns]))}
+        
         Create a focused analysis plan. What specific concepts should we fetch and analyze?
+        Pay attention to any sheet names mentioned in the query and match them to the available sheets.
         """
         
         try:
@@ -187,16 +197,24 @@ class DataFetcherNode:
             logger.error(f"Failed to connect to spreadsheet {self.spreadsheet_id}: {e}")
             spreadsheet = None
         
-        # Check for exact matches in both rows and columns
+        # Check for exact matches in both rows and columns, filtered by target sheets
         matching_rows = []
         matching_columns = []
         
         for row_meta in plan.specific_rows:
-            if any(keyword.lower() in row_meta.first_cell_value.lower() for keyword in plan.target_concepts):
+            # Check if row matches concepts AND is in target sheets (if specified)
+            concept_match = any(keyword.lower() in row_meta.first_cell_value.lower() for keyword in plan.target_concepts)
+            sheet_match = not plan.target_sheets or any(sheet.lower() in row_meta.sheet.lower() for sheet in plan.target_sheets)
+            
+            if concept_match and sheet_match:
                 matching_rows.append(row_meta)
         
         for col_meta in plan.specific_columns:
-            if any(keyword.lower() in col_meta.header.lower() for keyword in plan.target_concepts):
+            # Check if column matches concepts AND is in target sheets (if specified)
+            concept_match = any(keyword.lower() in col_meta.header.lower() for keyword in plan.target_concepts)
+            sheet_match = not plan.target_sheets or any(sheet.lower() in col_meta.sheet.lower() for sheet in plan.target_sheets)
+            
+            if concept_match and sheet_match:
                 matching_columns.append(col_meta)
         
         # Prioritize columns for typical business metrics (revenue, profit, cost, etc.)
@@ -396,35 +414,26 @@ class SearchEngineV2:
         workflow.add_node("calculator", self.calculator)
         
         # Define the conditional branching logic
-        def route_after_analysis(state: SearchState) -> str:
-            """Decide which branch to take based on analysis"""
+        def route_after_fetching(state: SearchState) -> str:
+            """Route to calculator or end based on branch type"""
             plan = state.get("plan", {})
             branch_type = plan.get("branch_type", "search")
             
             if branch_type == "calculate":
-                return "data_fetcher"  # Go to data fetcher first for calculations
+                return "calculator"  # Go to calculator for calculation queries
             else:
-                return "search_complete"  # Skip data fetching for search queries
-        
-        def route_after_fetching(state: SearchState) -> str:
-            """Route to calculator after data fetching"""
-            return "calculator"
+                return "search_complete"  # End for search queries
         
         # Define the flow with conditional branching
         workflow.set_entry_point("query_analyzer")
-        workflow.add_conditional_edges(
-            "query_analyzer",
-            route_after_analysis,
-            {
-                "data_fetcher": "data_fetcher",
-                "search_complete": END
-            }
-        )
+        # Always go to data_fetcher after analysis (both search and calculate need data)
+        workflow.add_edge("query_analyzer", "data_fetcher")
         workflow.add_conditional_edges(
             "data_fetcher", 
             route_after_fetching,
             {
-                "calculator": "calculator"
+                "calculator": "calculator",
+                "search_complete": END
             }
         )
         workflow.add_edge("calculator", END)

@@ -96,29 +96,48 @@ class CalculatorNode:
         
         for data in enriched_data:
             if data.values:
-                # Create a record with metadata
+                # Create a record with metadata - ensure these are NOT numeric columns
                 record = {
-                    "sheet": data.sheet,
-                    "source": data.first_cell_value,
-                    "row_number": data.row_number,
-                    "cell_addresses": data.cell_addresses
+                    "sheet": str(data.sheet),  # Force string type
+                    "source": str(data.first_cell_value),  # Force string type
+                    "row_number_meta": str(data.row_number),  # Rename and force string to avoid numeric treatment
+                    "cell_addresses": str(data.cell_addresses)  # Force string type
                 }
                 
                 # Add values with their headers if available
                 if data.headers and len(data.headers) == len(data.values):
                     for header, value in zip(data.headers, data.values):
-                        # Try to convert to numeric if possible
-                        try:
-                            record[header] = pd.to_numeric(value)
-                        except (ValueError, TypeError):
-                            record[header] = value
+                        # Filter out empty/null values before conversion
+                        if value is not None and value != "" and value != " ":
+                            try:
+                                numeric_value = pd.to_numeric(value)
+                                # Only include if it's a valid number (not NaN)
+                                if not pd.isna(numeric_value):
+                                    record[header] = numeric_value
+                                else:
+                                    record[header] = value
+                            except (ValueError, TypeError):
+                                record[header] = value
+                        else:
+                            # Skip empty values entirely
+                            record[header] = pd.NA
                 else:
                     # Add values with generic column names
                     for i, value in enumerate(data.values):
-                        try:
-                            record[f"value_{i}"] = pd.to_numeric(value)
-                        except (ValueError, TypeError):
-                            record[f"value_{i}"] = value
+                        # Filter out empty/null values before conversion
+                        if value is not None and value != "" and value != " ":
+                            try:
+                                numeric_value = pd.to_numeric(value)
+                                # Only include if it's a valid number (not NaN)
+                                if not pd.isna(numeric_value):
+                                    record[f"value_{i}"] = numeric_value
+                                else:
+                                    record[f"value_{i}"] = value
+                            except (ValueError, TypeError):
+                                record[f"value_{i}"] = value
+                        else:
+                            # Skip empty values entirely
+                            record[f"value_{i}"] = pd.NA
                 
                 all_data.append(record)
         
@@ -143,15 +162,27 @@ class CalculatorNode:
         }
         
         Common operations:
-        - sum: Total of numeric values
-        - max/min: Maximum/minimum values
-        - average: Mean of numeric values
+        - sum: Total of numeric values - use df.select_dtypes(include=[np.number]).sum().sum() for all numeric values
+        - max/min: Maximum/minimum values - use df.select_dtypes(include=[np.number]).max().max() or .min().min()
+        - average: Mean of numeric values - use df.select_dtypes(include=[np.number]).mean().mean()
         - count: Count of non-null values
         - percentage: Percentage calculations
         - growth_rate: Period-over-period growth
         - custom: Complex formula requiring pandas operations
         
-        For formulas, use pandas syntax like: df['column'].sum(), df['column'].max(), etc.
+        For formulas, use pandas syntax like: 
+        - df['column'].sum() for single column sum
+        - df.select_dtypes(include=[np.number]).sum().sum() for sum of all numeric values
+        - df['column'].max(), df['column'].min(), df['column'].mean() for specific columns
+        - df.select_dtypes(include=[np.number]).max().max() for maximum of all numeric values
+        - df.select_dtypes(include=[np.number]).min().min() for minimum of all numeric values
+        - df.select_dtypes(include=[np.number]).mean().mean() for average of all numeric values
+        
+        IMPORTANT: 
+        - For aggregate operations (sum, max, min, mean), always use double aggregation (.sum().sum(), .max().max(), etc.) to get a single scalar value, not a Series.
+        - Pandas automatically excludes NA/NaN values from min/max/mean calculations
+        - Always use skipna=True (default) to ignore missing values
+        - Exclude metadata columns (sheet, source, row_number_meta, cell_addresses) from calculations
         """
         
         user_prompt = f"""
@@ -177,13 +208,35 @@ class CalculatorNode:
             
         except Exception as e:
             logger.error(f"Error getting calculation strategy: {e}")
-            # Fallback strategy
+            # Intelligent fallback strategy based on query keywords
+            query_lower = query.lower()
+            
+            # Define metadata columns to exclude from calculations
+            metadata_columns = ["sheet", "source", "row_number_meta", "cell_addresses"]
+            
+            if any(keyword in query_lower for keyword in ["max", "maximum", "highest", "largest"]):
+                operation = "max"
+                formula = f"df.drop(columns={metadata_columns}, errors='ignore').select_dtypes(include=[np.number]).max(skipna=True).max(skipna=True)"
+                explanation = "Maximum of all numeric values (excluding empty cells and metadata)"
+            elif any(keyword in query_lower for keyword in ["min", "minimum", "lowest", "smallest"]):
+                operation = "min"
+                formula = f"df.drop(columns={metadata_columns}, errors='ignore').select_dtypes(include=[np.number]).min(skipna=True).min(skipna=True)"
+                explanation = "Minimum of all numeric values (excluding empty cells and metadata)"
+            elif any(keyword in query_lower for keyword in ["average", "mean", "avg"]):
+                operation = "average"
+                formula = f"df.drop(columns={metadata_columns}, errors='ignore').select_dtypes(include=[np.number]).mean(skipna=True).mean(skipna=True)"
+                explanation = "Average of all numeric values (excluding empty cells and metadata)"
+            else:
+                operation = "sum"
+                formula = f"df.drop(columns={metadata_columns}, errors='ignore').select_dtypes(include=[np.number]).sum(skipna=True).sum(skipna=True)"
+                explanation = "Sum of all numeric values (excluding empty cells and metadata)"
+            
             return {
-                "operation": "sum",
+                "operation": operation,
                 "target_columns": [],
                 "filters": {},
-                "formula": "df.select_dtypes(include=[np.number]).sum().sum()",
-                "explanation": "Sum of all numeric values"
+                "formula": formula,
+                "explanation": explanation
             }
     
     def _execute_calculation(self, strategy: Dict, df: pd.DataFrame) -> Dict:
@@ -211,20 +264,41 @@ class CalculatorNode:
                 result_value = eval(formula, {"__builtins__": {}}, safe_locals)
                 
                 # Handle different result types
-                if isinstance(result_value, (pd.Series, pd.DataFrame)):
+                if isinstance(result_value, pd.Series):
+                    # For Series, check if it's a single value or multiple values
                     if len(result_value) == 1:
                         result_value = result_value.iloc[0]
+                    else:
+                        # If multiple values, aggregate them based on operation type
+                        operation = strategy.get("operation", "").lower()
+                        if operation in ["sum", "total"]:
+                            result_value = result_value.sum()
+                        elif operation in ["max", "maximum"]:
+                            result_value = result_value.max()
+                        elif operation in ["min", "minimum"]:
+                            result_value = result_value.min()
+                        elif operation in ["mean", "average", "avg"]:
+                            result_value = result_value.mean()
+                        else:
+                            result_value = result_value.to_dict()
+                elif isinstance(result_value, pd.DataFrame):
+                    # For DataFrame, convert to dict or extract single value
+                    if result_value.size == 1:
+                        result_value = result_value.iloc[0, 0]
                     else:
                         result_value = result_value.to_dict()
                 
             else:
                 result_value = "No formula provided"
             
-            # Create data summary
+            # Create data summary excluding metadata columns
+            metadata_columns = ["sheet", "source", "row_number_meta", "cell_addresses"]
+            numeric_df = filtered_df.drop(columns=metadata_columns, errors='ignore')
+            
             data_summary = {
                 "rows_processed": len(filtered_df),
                 "columns_used": strategy.get("target_columns", []),
-                "numeric_columns": list(filtered_df.select_dtypes(include=[np.number]).columns),
+                "numeric_columns": list(numeric_df.select_dtypes(include=[np.number]).columns),
                 "operation_type": strategy.get("operation", "unknown")
             }
             
@@ -254,14 +328,17 @@ class CalculatorNode:
             f"Columns: {list(df.columns)}",
         ]
         
-        # Add numeric column info
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        # Exclude metadata columns from numeric analysis
+        metadata_columns = ["sheet", "source", "row_number_meta", "cell_addresses"]
+        numeric_df = df.drop(columns=metadata_columns, errors='ignore')
+        numeric_cols = numeric_df.select_dtypes(include=[np.number]).columns.tolist()
+        
         if numeric_cols:
             summary_parts.append(f"Numeric columns: {numeric_cols}")
             
             # Add sample statistics for numeric columns
             for col in numeric_cols[:3]:  # Limit to first 3 numeric columns
-                stats = df[col].describe()
+                stats = numeric_df[col].describe()
                 summary_parts.append(f"{col}: min={stats['min']}, max={stats['max']}, mean={stats['mean']:.2f}")
         
         # Add sample data
