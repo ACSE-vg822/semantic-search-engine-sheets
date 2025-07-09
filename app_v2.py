@@ -22,6 +22,11 @@ def display_v2_search_results(results):
         
         for i, data in enumerate(enriched_data, 1):
             with st.expander(f"📌 {data['first_cell_value']} | {data['sheet']}"):
+                # Show explanation first if available
+                if data.get('metadata', {}).get('explanation'):
+                    st.markdown(f"**💡 Why this matches:** {data['metadata']['explanation']}")
+                    st.markdown("---")
+                
                 st.markdown(f"**📋 Sheet:** `{data['sheet']}`")
                 st.markdown(f"**📍 Location:** `{data['cell_addresses']}`")
                 st.markdown(f"**📊 Values:** {data['values']}")
@@ -89,7 +94,7 @@ def extract_sheet_id_from_url(url_or_id):
 
 st.set_page_config(page_title="Semantic Search Engine V2", layout="wide")
 st.title("🔍 Semantic Search Engine V2")
-st.markdown("*Powered by LangGraph pipeline with pandas analysis and Claude insights*")
+st.markdown("*Powered by LangGraph pipeline with live data fetching and smart explanations*")
 
 # Initialize session state
 if 'knowledge_graph' not in st.session_state:

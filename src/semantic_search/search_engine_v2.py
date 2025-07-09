@@ -1,9 +1,9 @@
-# search_engine_v2.py - LangGraph-based Semantic Search with Pandas Analysis
+# search_engine_v2.py - LangGraph-based Semantic Search
 
 import os
 import json
 import logging
-import pandas as pd
+
 import toml
 from typing import Dict, List, Optional, Union, Tuple, TypedDict
 from dataclasses import dataclass, asdict
@@ -27,7 +27,6 @@ class SearchState(TypedDict):
     retriever_results: List[Tuple]
     plan: Optional[Dict]
     enriched_data: List[Dict]
-    insights: Dict
     status: str
 
 @dataclass
@@ -156,6 +155,7 @@ class DataFetcherNode:
     def __init__(self, spreadsheet_id: str):
         self.spreadsheet_id = spreadsheet_id
         self.client = self._setup_google_sheets_auth()
+        self.claude_client = None  # Will be set by SearchEngineV2
     
     def __call__(self, state: SearchState) -> SearchState:
         """LangGraph node function for data fetching"""
@@ -171,6 +171,7 @@ class DataFetcherNode:
         )
         enriched_data = self.fetch_targeted_data(plan)
         state["enriched_data"] = [asdict(d) for d in enriched_data]
+        state["status"] = "success"  # Set success status since this is the final node
         return state
     
     def _setup_google_sheets_auth(self):
@@ -211,7 +212,7 @@ class DataFetcherNode:
         if matching_columns and query_is_business_metric:
             # Process matching columns with live data fetching
             for col_meta in matching_columns:
-                enriched_row = self._fetch_live_column_data(col_meta, spreadsheet)
+                enriched_row = self._fetch_live_column_data(col_meta, spreadsheet, plan.target_concepts)
                 enriched_data.append(enriched_row)
         
         # Only include rows if we don't have good column matches, or if rows are specifically relevant
@@ -220,12 +221,12 @@ class DataFetcherNode:
             rows_to_process = matching_rows if matching_rows else plan.specific_rows[:3]
             
             for row_meta in rows_to_process:
-                enriched_row = self._fetch_live_row_data(row_meta, spreadsheet)
+                enriched_row = self._fetch_live_row_data(row_meta, spreadsheet, plan.target_concepts)
                 enriched_data.append(enriched_row)
             
         return enriched_data
     
-    def _fetch_live_column_data(self, col_meta: ColumnMetadata, spreadsheet) -> EnrichedRowData:
+    def _fetch_live_column_data(self, col_meta: ColumnMetadata, spreadsheet, target_concepts: List[str]) -> EnrichedRowData:
         """Fetch live column data from spreadsheet with fallback to cached"""
         if spreadsheet:
             try:
@@ -244,6 +245,12 @@ class DataFetcherNode:
                 if flat_formulas:
                     cross_refs = self._resolve_formula_references(flat_formulas, spreadsheet)
                 
+                # Generate explanation for why this column matches the query
+                explanation = self._generate_explanation(
+                    col_meta.header, col_meta.sheet, col_meta.addresses, 
+                    flat_values[:3], target_concepts, "column"
+                )
+                
                 return EnrichedRowData(
                     first_cell_value=f"Column: {col_meta.header}",
                     sheet=col_meta.sheet,
@@ -253,16 +260,28 @@ class DataFetcherNode:
                     headers=[col_meta.header],
                     cell_addresses=col_meta.addresses,
                     cross_references=cross_refs,
-                    metadata={"data_type": col_meta.data_type, "source": "live_data", "column_header": col_meta.header}
+                    metadata={
+                        "data_type": col_meta.data_type, 
+                        "source": "live_data", 
+                        "column_header": col_meta.header,
+                        "explanation": explanation
+                    }
                 )
                 
             except Exception as e:
                 logger.error(f"Failed to fetch live column data for {col_meta.header}: {e}")
         
         # Fallback to cached metadata
-        return self._create_enriched_from_column(col_meta)
+        fallback_data = self._create_enriched_from_column(col_meta)
+        # Add explanation to fallback as well
+        explanation = self._generate_explanation(
+            col_meta.header, col_meta.sheet, col_meta.addresses, 
+            col_meta.sample_values[:3], target_concepts, "column"
+        )
+        fallback_data.metadata["explanation"] = explanation
+        return fallback_data
     
-    def _fetch_live_row_data(self, row_meta: RowMetadata, spreadsheet) -> EnrichedRowData:
+    def _fetch_live_row_data(self, row_meta: RowMetadata, spreadsheet, target_concepts: List[str]) -> EnrichedRowData:
         """Fetch live row data from spreadsheet with fallback to cached"""
         if spreadsheet:
             try:
@@ -281,6 +300,12 @@ class DataFetcherNode:
                 if flat_formulas:
                     cross_refs = self._resolve_formula_references(flat_formulas, spreadsheet)
                 
+                # Generate explanation for why this row matches the query
+                explanation = self._generate_explanation(
+                    row_meta.first_cell_value, row_meta.sheet, row_meta.cell_addresses, 
+                    flat_values[:3], target_concepts, "row"
+                )
+                
                 return EnrichedRowData(
                     first_cell_value=row_meta.first_cell_value,
                     sheet=row_meta.sheet,
@@ -290,14 +315,68 @@ class DataFetcherNode:
                     headers=row_meta.col_headers,
                     cell_addresses=row_meta.cell_addresses,
                     cross_references=cross_refs,
-                    metadata={"data_type": row_meta.data_type, "source": "live_data"}
+                    metadata={
+                        "data_type": row_meta.data_type, 
+                        "source": "live_data",
+                        "explanation": explanation
+                    }
                 )
                 
             except Exception as e:
                 logger.error(f"Failed to fetch live row data for {row_meta.first_cell_value}: {e}")
         
         # Fallback to cached metadata
-        return self._create_enriched_from_metadata(row_meta)
+        fallback_data = self._create_enriched_from_metadata(row_meta)
+        # Add explanation to fallback as well
+        explanation = self._generate_explanation(
+            row_meta.first_cell_value, row_meta.sheet, row_meta.cell_addresses, 
+            row_meta.sample_values[:3], target_concepts, "row"
+        )
+        fallback_data.metadata["explanation"] = explanation
+        return fallback_data
+    
+    def _generate_explanation(self, name: str, sheet: str, addresses: str, 
+                            sample_values: List, target_concepts: List[str], data_type: str) -> str:
+        """Generate a concise explanation for why this data matches the query"""
+        
+        # Create explanation based on matching concepts and data characteristics
+        explanation_parts = []
+        
+        # Check which target concepts match
+        matched_concepts = []
+        name_lower = name.lower()
+        for concept in target_concepts:
+            if concept.lower() in name_lower:
+                matched_concepts.append(concept)
+        
+        # Create base explanation
+        if matched_concepts:
+            if data_type == "column":
+                explanation_parts.append(f"Contains '{matched_concepts[0]}' data")
+            else:
+                explanation_parts.append(f"Row labeled '{name}' matches '{matched_concepts[0]}'")
+        else:
+            # Fallback for semantic matches
+            if data_type == "column":
+                explanation_parts.append(f"Column contains relevant financial metrics")
+            else:
+                explanation_parts.append(f"Row contains related business data")
+        
+        # Add context about data type
+        if sample_values:
+            numeric_values = [v for v in sample_values if isinstance(v, (int, float))]
+            if numeric_values:
+                if any(v > 1000 for v in numeric_values):
+                    explanation_parts.append("with large numeric values")
+                elif any(0 < v < 1 for v in numeric_values):
+                    explanation_parts.append("with percentage/ratio values")
+                else:
+                    explanation_parts.append("with numeric calculations")
+        
+        # Add location context
+        explanation_parts.append(f"at {sheet}!{addresses}")
+        
+        return " ".join(explanation_parts) + "."
     
     def _resolve_formula_references(self, formulas: List[str], spreadsheet) -> Dict[str, any]:
         """Resolve formula references to actual values"""
@@ -346,211 +425,6 @@ class DataFetcherNode:
             cross_references=dict(zip(row_meta.formulae, ["cached_value"] * len(row_meta.formulae))),
             metadata={"data_type": row_meta.data_type, "source": "cached_metadata"}
         )
-    
-
-
-class InsightGeneratorNode:
-    """Node 3: Generate insights using pandas analysis"""
-    
-    def __init__(self, claude_client):
-        self.client = claude_client
-    
-    def __call__(self, state: SearchState) -> SearchState:
-        """LangGraph node function for insight generation"""
-        # Convert enriched_data dicts back to EnrichedRowData objects
-        enriched_data = [EnrichedRowData(**d) for d in state["enriched_data"]]
-        
-        # Convert plan dict back to DataFetchPlan with proper object reconstruction
-        plan_dict = state["plan"]
-        plan = DataFetchPlan(
-            target_sheets=plan_dict["target_sheets"],
-            target_concepts=plan_dict["target_concepts"],
-            analysis_type=plan_dict["analysis_type"],
-            specific_rows=[RowMetadata(**row) for row in plan_dict["specific_rows"]],
-            specific_columns=[ColumnMetadata(**col) for col in plan_dict["specific_columns"]],
-            expected_insights=plan_dict["expected_insights"]
-        )
-        
-        insights = self.generate_insights(enriched_data, plan, state["query"])
-        state["insights"] = insights
-        state["status"] = "success"
-        return state
-    
-    def generate_insights(self, data: List[EnrichedRowData], plan: DataFetchPlan, original_query: str) -> Dict:
-        """Generate business insights from the enriched data"""
-        
-        if not data:
-            return {"error": "No data available for analysis"}
-        
-        # Convert to pandas DataFrame for analysis
-        df = self._create_analysis_dataframe(data)
-        
-        insights = {
-            "raw_data_summary": self._summarize_raw_data(data),
-            "pandas_analysis": {}
-        }
-        
-        # Perform analysis based on plan type
-        if plan.analysis_type == "trend" and len(df.columns) > 2:
-            insights["pandas_analysis"]["growth_analysis"] = self._calculate_growth_trends(df)
-            
-        elif plan.analysis_type == "summary":
-            insights["pandas_analysis"]["key_metrics"] = self._summarize_key_metrics(df, data)
-            
-        elif plan.analysis_type == "calculation":
-            insights["pandas_analysis"]["formula_breakdown"] = self._explain_calculations(data)
-            
-        elif plan.analysis_type == "comparison":
-            insights["pandas_analysis"]["comparison_analysis"] = self._perform_comparison_analysis(df)
-        
-        # Generate business narrative using Claude
-        insights["business_narrative"] = self._generate_business_narrative(insights, original_query)
-        
-        return insights
-    
-    def _create_analysis_dataframe(self, data: List[EnrichedRowData]) -> pd.DataFrame:
-        """Convert enriched data to pandas DataFrame"""
-        rows_dict = {}
-        
-        for row_data in data:
-            # Use concept as row index
-            concept = row_data.first_cell_value
-            
-            # Create columns from headers and values
-            if len(row_data.headers) == len(row_data.values):
-                row_dict = dict(zip(row_data.headers, row_data.values))
-                rows_dict[concept] = row_dict
-            else:
-                # Fallback: use positional columns
-                for i, value in enumerate(row_data.values):
-                    if isinstance(value, (int, float)):  # Only include numeric values
-                        rows_dict.setdefault(concept, {})[f"Value_{i+1}"] = value
-        
-        return pd.DataFrame.from_dict(rows_dict, orient='index')
-    
-    def _calculate_growth_trends(self, df: pd.DataFrame) -> Dict:
-        """Calculate growth trends using pandas"""
-        try:
-            import numpy as np
-            numeric_df = df.select_dtypes(include=[np.number]) if hasattr(df, 'select_dtypes') else df._get_numeric_data()
-            
-            if numeric_df.empty or len(numeric_df.columns) < 2:
-                return {"error": "Insufficient numeric data for trend analysis"}
-            
-            # Calculate percentage changes
-            pct_changes = numeric_df.pct_change(axis=1) * 100
-            
-            growth_analysis = {}
-            for index in numeric_df.index:
-                row_data = numeric_df.loc[index]
-                growth_rates = pct_changes.loc[index].dropna()
-                
-                if not growth_rates.empty:
-                    growth_analysis[index] = {
-                        "values": row_data.tolist(),
-                        "growth_rates": growth_rates.tolist(),
-                        "average_growth": growth_rates.mean(),
-                        "total_growth": ((row_data.iloc[-1] / row_data.iloc[0]) - 1) * 100 if row_data.iloc[0] != 0 else 0
-                    }
-            
-            return growth_analysis
-            
-        except Exception as e:
-            return {"error": f"Error in growth trend calculation: {str(e)}"}
-    
-    def _summarize_key_metrics(self, df: pd.DataFrame, data: List[EnrichedRowData]) -> Dict:
-        """Summarize key metrics"""
-        metrics = {}
-        
-        for row_data in data:
-            concept = row_data.first_cell_value
-            
-            # Extract numeric values
-            numeric_values = [v for v in row_data.values if isinstance(v, (int, float))]
-            
-            if numeric_values:
-                metrics[concept] = {
-                    "primary_value": numeric_values[0] if numeric_values else None,
-                    "all_values": numeric_values,
-                    "total": sum(numeric_values),
-                    "average": sum(numeric_values) / len(numeric_values),
-                    "sheet": row_data.sheet,
-                    "has_formulas": len(row_data.formulas) > 0,
-                    "cross_references": row_data.cross_references
-                }
-        
-        return metrics
-    
-    def _explain_calculations(self, data: List[EnrichedRowData]) -> Dict:
-        """Explain formulas and calculations"""
-        explanations = {}
-        
-        for row_data in data:
-            if row_data.formulas or row_data.cross_references:
-                explanations[row_data.first_cell_value] = {
-                    "formulas": row_data.formulas,
-                    "cross_references": row_data.cross_references,
-                    "explanation": f"This {row_data.first_cell_value} calculation involves {len(row_data.formulas)} formulas and {len(row_data.cross_references)} cross-references"
-                }
-                
-        return explanations
-    
-    def _perform_comparison_analysis(self, df: pd.DataFrame) -> Dict:
-        """Perform comparison analysis"""
-        try:
-            numeric_df = df._get_numeric_data()
-            
-            if numeric_df.empty:
-                return {"error": "No numeric data for comparison"}
-            
-            comparison = {
-                "summary_stats": numeric_df.describe().to_dict(),
-                "correlations": numeric_df.corr().to_dict() if len(numeric_df.columns) > 1 else {},
-                "rankings": numeric_df.sum(axis=1).sort_values(ascending=False).to_dict()
-            }
-            
-            return comparison
-            
-        except Exception as e:
-            return {"error": f"Error in comparison analysis: {str(e)}"}
-    
-    def _summarize_raw_data(self, data: List[EnrichedRowData]) -> Dict:
-        """Summarize the raw data structure"""
-        return {
-            "total_concepts": len(data),
-            "sheets_involved": list(set([d.sheet for d in data])),
-            "concepts_found": [d.first_cell_value for d in data],
-            "has_formulas": sum(1 for d in data if d.formulas),
-            "has_cross_references": sum(1 for d in data if d.cross_references)
-        }
-    
-    def _generate_business_narrative(self, insights: Dict, original_query: str) -> str:
-        """Generate business narrative using Claude"""
-        try:
-            system_prompt = """You are a business analyst. Given analysis results and the original user query, 
-            provide a clear, business-focused narrative explanation. Focus on actionable insights."""
-            
-            user_prompt = f"""
-            Original Query: "{original_query}"
-            
-            Analysis Results:
-            {json.dumps(insights, indent=2, default=str)}
-            
-            Provide a clear business narrative explaining what was found and what it means.
-            """
-            
-            response = self.client.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=1000,
-                temperature=0.3,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}]
-            )
-            
-            return response.content[0].text
-            
-        except Exception as e:
-            return f"Generated insights from {insights['raw_data_summary']['total_concepts']} concepts across {len(insights['raw_data_summary']['sheets_involved'])} sheets."
 
 class SearchEngineV2:
     """LangGraph-based search engine"""
@@ -565,10 +439,10 @@ class SearchEngineV2:
         # Setup Claude client
         self.claude_client = self._setup_claude_client()
         
-        # Initialize nodes
+        # Initialize nodes (only 2 nodes now)
         self.query_analyzer = QueryAnalyzerNode(self.claude_client)
         self.data_fetcher = DataFetcherNode(spreadsheet_id)
-        self.insight_generator = InsightGeneratorNode(self.claude_client)
+        self.data_fetcher.claude_client = self.claude_client  # Pass Claude client for explanations
         
         # Create LangGraph workflow
         self.workflow = self._create_workflow()
@@ -578,16 +452,14 @@ class SearchEngineV2:
         # Initialize the graph
         workflow = StateGraph(SearchState)
         
-        # Add nodes
+        # Add nodes (only 2 nodes now)
         workflow.add_node("query_analyzer", self.query_analyzer)
         workflow.add_node("data_fetcher", self.data_fetcher)
-        workflow.add_node("insight_generator", self.insight_generator)
         
-        # Define the flow
+        # Define the flow (simplified)
         workflow.set_entry_point("query_analyzer")
         workflow.add_edge("query_analyzer", "data_fetcher")
-        workflow.add_edge("data_fetcher", "insight_generator")
-        workflow.add_edge("insight_generator", END)
+        workflow.add_edge("data_fetcher", END)
         
         # Compile the workflow
         return workflow.compile()
@@ -621,23 +493,24 @@ class SearchEngineV2:
         # Use existing RAG retriever for initial filtering
         retriever_results = self.retriever.retrieve(query, top_k=10)
         
-        # Initialize the state
+        # Initialize the state (simplified - no insights needed)
         initial_state: SearchState = {
             "query": query,
             "retriever_results": retriever_results,
             "plan": None,
             "enriched_data": [],
-            "insights": {},
             "status": "pending"
         }
         
         # Run the LangGraph workflow
         final_state = self.workflow.invoke(initial_state)
         
+        # Set status to success since we completed data fetching
+        final_state["status"] = "success"
+        
         return {
             "query": final_state["query"],
             "plan": final_state["plan"],
             "enriched_data": final_state["enriched_data"],
-            "insights": final_state["insights"],
             "status": final_state["status"]
         } 
