@@ -204,7 +204,13 @@ pip install -r requirements.txt
 
 ### Configuration
 
-1. **Google Sheets API**:
+1. **Claude API**:
+
+   ```toml
+   claude_api_key = "your_claude_api_key"
+   ```
+
+2. **Google Sheets API**:
 
    - Set up service account credentials
    - Add to `.streamlit/secrets.toml`:
@@ -212,11 +218,6 @@ pip install -r requirements.txt
    ```toml
    [google_credentials]
    # Your service account JSON here
-   ```
-
-2. **Claude API**:
-   ```toml
-   claude_api_key = "your_claude_api_key"
    ```
 
 ### Running the Application
