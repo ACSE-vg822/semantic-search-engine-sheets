@@ -5,13 +5,6 @@
 1. [Project Overview](#project-overview)
 2. [System Architecture](#system-architecture)
 3. [Core Components](#core-components)
-4. [Data Flow & Processing Pipeline](#data-flow--processing-pipeline)
-5. [Technical Implementation](#technical-implementation)
-6. [User Interface & Experience](#user-interface--experience)
-7. [Performance & Optimization](#performance--optimization)
-8. [API Integration & Security](#api-integration--security)
-9. [Challenges & Solutions](#challenges--solutions)
-10. [Future Enhancements](#future-enhancements)
 
 ---
 
