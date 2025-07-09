@@ -16,43 +16,12 @@ from langgraph.graph import StateGraph, END
 
 from src.data_ingestion.spreadsheet_parser_advance import SpreadsheetKnowledgeGraph, RowMetadata, ColumnMetadata
 from src.rag.retriever import SpreadsheetRetriever
+from src.semantic_search.types import SearchState, DataFetchPlan, EnrichedRowData
+from src.semantic_search.calculator_node import CalculatorNode
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-class SearchState(TypedDict):
-    """State schema for the LangGraph search workflow"""
-    query: str
-    retriever_results: List[Tuple]
-    plan: Optional[Dict]
-    enriched_data: List[Dict]
-    status: str
-
-@dataclass
-class DataFetchPlan:
-    """Plan for what data to fetch based on query analysis"""
-    target_sheets: List[str]
-    target_concepts: List[str] 
-    analysis_type: str  # "summary", "trend", "comparison", "calculation"
-    specific_rows: List[RowMetadata]
-    specific_columns: List[ColumnMetadata]
-    expected_insights: List[str]
-    # New: LLM-generated explanations for each data item
-    data_explanations: Dict[str, str]  # key: "row_X" or "col_X", value: explanation
-
-@dataclass
-class EnrichedRowData:
-    """Row data with full context and resolved references"""
-    first_cell_value: str
-    sheet: str
-    row_number: int
-    values: List[Union[str, float, int]]
-    formulas: List[str]
-    headers: List[str]
-    cell_addresses: str
-    cross_references: Dict[str, any]
-    metadata: Dict[str, any]
 
 class QueryAnalyzerNode:
     """Node 1: Analyze query and create focused data fetching plan"""
@@ -77,10 +46,11 @@ class QueryAnalyzerNode:
         available_data = self._summarize_available_data(rows, columns)
         
         system_prompt = """You are a spreadsheet analysis planner. Given a user query and available data, 
-        create a focused plan for data fetching and analysis.
+        create a focused plan for data fetching and analysis. You must also determine the appropriate workflow branch.
 
         Respond with a JSON object containing:
         {
+            "branch_type": "search|calculate",
             "target_sheets": ["sheet1", "sheet2"],
             "target_concepts": ["concept1", "concept2"], 
             "analysis_type": "summary|trend|comparison|calculation",
@@ -90,6 +60,12 @@ class QueryAnalyzerNode:
                 "col_Sheet1_Actual_Revenue": "explanation for why this column is relevant"
             }
         }
+        
+        BRANCH DECISION RULES:
+        - "search": Use when user wants to FIND existing data, patterns, or information
+          Examples: "find all percentage calculations", "show me revenue rows", "what expenses do we have"
+        - "calculate": Use when user wants to COMPUTE new values or perform mathematical operations
+          Examples: "calculate max revenue", "sum all costs", "what's the average profit margin"
         
         For data_explanations, provide a natural language explanation for each relevant row/column 
         explaining WHY it matches the user's query and what insights it can provide.
@@ -129,7 +105,8 @@ class QueryAnalyzerNode:
                 specific_rows=rows,  # Pass through the filtered rows
                 specific_columns=columns,  # Pass through the filtered columns
                 expected_insights=plan_json.get("expected_insights", []),
-                data_explanations=plan_json.get("data_explanations", {})  # Extract LLM explanations
+                data_explanations=plan_json.get("data_explanations", {}),  # Extract LLM explanations
+                branch_type=plan_json.get("branch_type", "search")  # Default to search if not specified
             )
             
         except Exception as e:
@@ -142,7 +119,8 @@ class QueryAnalyzerNode:
                 specific_rows=rows,
                 specific_columns=columns,
                 expected_insights=["totals", "key_metrics"],
-                data_explanations={} # Initialize with empty dict
+                data_explanations={},  # Initialize with empty dict
+                branch_type="search"  # Default fallback to search
             )
     
     def _summarize_available_data(self, rows: List[RowMetadata], columns: List[ColumnMetadata]) -> str:
@@ -182,7 +160,8 @@ class DataFetcherNode:
             specific_rows=[RowMetadata(**row) for row in plan_dict["specific_rows"]],
             specific_columns=[ColumnMetadata(**col) for col in plan_dict["specific_columns"]],
             expected_insights=plan_dict["expected_insights"],
-            data_explanations=plan_dict["data_explanations"] # Pass through explanations
+            data_explanations=plan_dict["data_explanations"],  # Pass through explanations
+            branch_type=plan_dict.get("branch_type", "search")  # Include branch type
         )
         enriched_data = self.fetch_targeted_data(plan)
         state["enriched_data"] = [asdict(d) for d in enriched_data]
@@ -397,27 +376,58 @@ class SearchEngineV2:
         # Setup Claude client
         self.claude_client = self._setup_claude_client()
         
-        # Initialize nodes (only 2 nodes now)
+        # Initialize nodes (now 3 nodes: analyzer, fetcher, calculator)
         self.query_analyzer = QueryAnalyzerNode(self.claude_client)
         self.data_fetcher = DataFetcherNode(spreadsheet_id)
         self.data_fetcher.claude_client = self.claude_client  # Pass Claude client for explanations
+        self.calculator = CalculatorNode(self.claude_client)
         
         # Create LangGraph workflow
         self.workflow = self._create_workflow()
     
     def _create_workflow(self) -> StateGraph:
-        """Create the LangGraph workflow"""
+        """Create the LangGraph workflow with conditional branching"""
         # Initialize the graph
         workflow = StateGraph(SearchState)
         
-        # Add nodes (only 2 nodes now)
+        # Add nodes (3 nodes: analyzer, fetcher, calculator)
         workflow.add_node("query_analyzer", self.query_analyzer)
         workflow.add_node("data_fetcher", self.data_fetcher)
+        workflow.add_node("calculator", self.calculator)
         
-        # Define the flow (simplified)
+        # Define the conditional branching logic
+        def route_after_analysis(state: SearchState) -> str:
+            """Decide which branch to take based on analysis"""
+            plan = state.get("plan", {})
+            branch_type = plan.get("branch_type", "search")
+            
+            if branch_type == "calculate":
+                return "data_fetcher"  # Go to data fetcher first for calculations
+            else:
+                return "search_complete"  # Skip data fetching for search queries
+        
+        def route_after_fetching(state: SearchState) -> str:
+            """Route to calculator after data fetching"""
+            return "calculator"
+        
+        # Define the flow with conditional branching
         workflow.set_entry_point("query_analyzer")
-        workflow.add_edge("query_analyzer", "data_fetcher")
-        workflow.add_edge("data_fetcher", END)
+        workflow.add_conditional_edges(
+            "query_analyzer",
+            route_after_analysis,
+            {
+                "data_fetcher": "data_fetcher",
+                "search_complete": END
+            }
+        )
+        workflow.add_conditional_edges(
+            "data_fetcher", 
+            route_after_fetching,
+            {
+                "calculator": "calculator"
+            }
+        )
+        workflow.add_edge("calculator", END)
         
         # Compile the workflow
         return workflow.compile()
@@ -451,12 +461,13 @@ class SearchEngineV2:
         # Use existing RAG retriever for initial filtering
         retriever_results = self.retriever.retrieve(query, top_k=10)
         
-        # Initialize the state (simplified - no insights needed)
+        # Initialize the state (includes calculation support)
         initial_state: SearchState = {
             "query": query,
             "retriever_results": retriever_results,
             "plan": None,
             "enriched_data": [],
+            "calculation_result": None,
             "status": "pending"
         }
         
@@ -470,5 +481,6 @@ class SearchEngineV2:
             "query": final_state["query"],
             "plan": final_state["plan"],
             "enriched_data": final_state["enriched_data"],
+            "calculation_result": final_state.get("calculation_result"),
             "status": final_state["status"]
         } 

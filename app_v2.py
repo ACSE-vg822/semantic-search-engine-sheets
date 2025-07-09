@@ -10,15 +10,47 @@ logger = logging.getLogger(__name__)
 
 def display_v2_search_results(results):
     """Display the SearchEngineV2 results in Streamlit."""
-    if results.get("status") != "success":
+    if results.get("status") not in ["success", "calculation_complete"]:
         st.error("❌ Search failed")
         return
     
+    # Check if this is a calculation result
+    calculation_result = results.get("calculation_result")
     enriched_data = results.get("enriched_data", [])
+    plan = results.get("plan", {})
+    branch_type = plan.get("branch_type", "search")
     
-    # Show detailed findings
+    # Display calculation results if available
+    if calculation_result:
+        st.markdown("### 🧮 Calculation Results")
+        
+        # Main calculation result
+        with st.container():
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                st.markdown(f"**🎯 Operation:** {calculation_result.get('operation', 'Unknown')}")
+                st.markdown(f"**💡 Explanation:** {calculation_result.get('explanation', 'No explanation available')}")
+                
+                # Show the result prominently
+                result_value = calculation_result.get('result')
+                if result_value is not None:
+                    if isinstance(result_value, (int, float)):
+                        st.metric("📊 Result", f"{result_value:,.2f}" if isinstance(result_value, float) else f"{result_value:,}")
+                    else:
+                        st.markdown(f"**📊 Result:** `{result_value}`")
+                
+            with col2:
+                # Data summary section removed per user request
+                pass
+    
+    # Show detailed findings (for both search and calculate branches)
     if enriched_data:
-        st.markdown("### 🔍 Detailed Findings")
+        # Different header based on branch type
+        if branch_type == "calculate":
+            st.markdown("### 📊 Data Used in Calculation")
+        else:
+            st.markdown("### 🔍 Search Results")
         
         for i, data in enumerate(enriched_data, 1):
             with st.expander(f"📌 {data['first_cell_value']} | {data['sheet']}"):
@@ -38,6 +70,10 @@ def display_v2_search_results(results):
                     st.markdown("**🔗 Cross References:**")
                     for ref, value in data['cross_references'].items():
                         st.markdown(f"  - `{ref}`: {value}")
+    
+    # Show message if no results for search branch
+    elif branch_type == "search" and not enriched_data:
+        st.info("🔍 No matching data found for your search query.")
 
 def build_and_cache_v2_search_engine(sheet_id, sheet_name):
     """Build and cache the SearchEngineV2 for the selected spreadsheet."""
@@ -228,19 +264,39 @@ if search_engine:
     
     # Sample questions
     st.markdown("### 💡 Try these sample questions:")
-    col1, col2 = st.columns(2)
     
-    with col1:
-        if st.button("💰 Find all revenue calculations", key="sample1"):
-            st.session_state.current_query = "Find all revenue calculations"
-        if st.button("🔧 Show me cost-related formulas", key="sample2"):
-            st.session_state.current_query = "Show me cost-related formulas"
+    # Create tabs for different types of queries
+    search_tab, calc_tab = st.tabs(["🔍 Search Queries", "🧮 Calculation Queries"])
     
-    with col2:
-        if st.button("📊 Where are my margin analyses?", key="sample3"):
-            st.session_state.current_query = "Where are my margin analyses?"
-        if st.button("📈 What percentage calculations do I have?", key="sample4"):
-            st.session_state.current_query = "What percentage calculations do I have?"
+    with search_tab:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("💰 Find all revenue calculations", key="search1"):
+                st.session_state.current_query = "Find all revenue calculations"
+            if st.button("🔧 Show me cost-related formulas", key="search2"):
+                st.session_state.current_query = "Show me cost-related formulas"
+        
+        with col2:
+            if st.button("📊 Where are my margin analyses?", key="search3"):
+                st.session_state.current_query = "Where are my margin analyses?"
+            if st.button("📈 What percentage calculations do I have?", key="search4"):
+                st.session_state.current_query = "What percentage calculations do I have?"
+    
+    with calc_tab:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🎯 Calculate maximum revenue", key="calc1"):
+                st.session_state.current_query = "Calculate maximum revenue"
+            if st.button("💰 Sum all costs", key="calc2"):
+                st.session_state.current_query = "Sum all costs"
+        
+        with col2:
+            if st.button("📊 Calculate average profit margin", key="calc3"):
+                st.session_state.current_query = "Calculate average profit margin"
+            if st.button("📈 What's the total expenses", key="calc4"):
+                st.session_state.current_query = "What's the total expenses"
     
     # Query input with current query as value
     query = st.text_input("Enter your semantic query:", value=st.session_state.current_query)
