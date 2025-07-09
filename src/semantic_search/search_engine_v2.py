@@ -11,12 +11,7 @@ from dataclasses import dataclass, asdict
 import gspread
 import streamlit as st
 from google.oauth2 import service_account
-
-try:
-    import anthropic
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
+import anthropic
 
 from src.data_ingestion.spreadsheet_parser_advance import SpreadsheetKnowledgeGraph, RowMetadata, ColumnMetadata
 from src.rag.retriever import SpreadsheetRetriever
@@ -159,10 +154,6 @@ class DataFetcherNode:
         """Fetch specific data based on the plan"""
         enriched_data = []
         
-        logger.debug(f"   �� Debug: Plan target concepts: {plan.target_concepts}")
-        logger.debug(f"   🔍 Debug: Available row concepts: {[r.first_cell_value for r in plan.specific_rows]}")
-        logger.debug(f"   🔍 Debug: Available column concepts: {[c.header for c in plan.specific_columns]}")
-        
         # Check for exact matches in both rows and columns
         matching_rows = []
         matching_columns = []
@@ -175,14 +166,11 @@ class DataFetcherNode:
             if any(keyword.lower() in col_meta.header.lower() for keyword in plan.target_concepts):
                 matching_columns.append(col_meta)
         
-        logger.debug(f"   🔍 Debug: Matching rows: {len(matching_rows)}, Matching columns: {len(matching_columns)}")
-        
         # Prioritize columns for typical business metrics (revenue, profit, cost, etc.)
         business_metrics = ['revenue', 'profit', 'cost', 'expense', 'sales', 'income', 'margin', 'growth']
         query_is_business_metric = any(metric in ' '.join(plan.target_concepts).lower() for metric in business_metrics)
         
         if matching_columns and query_is_business_metric:
-            logger.debug(f"   📊 Processing {len(matching_columns)} column(s) for business metrics")
             # Process matching columns - convert to enriched row format
             for col_meta in matching_columns:
                 enriched_row = self._create_enriched_from_column(col_meta)
@@ -192,14 +180,10 @@ class DataFetcherNode:
         if not (matching_columns and query_is_business_metric):
             # No good columns found, fall back to rows
             rows_to_process = matching_rows if matching_rows else plan.specific_rows[:3]
-            logger.debug(f"   📡 No column matches, processing {len(rows_to_process)} rows")
             
             for row_meta in rows_to_process:
-                logger.debug(f"   📡 Processing row: {row_meta.first_cell_value} from {row_meta.sheet}")
                 enriched_row = self._create_enriched_from_metadata(row_meta)
                 enriched_data.append(enriched_row)
-        else:
-            logger.debug(f"   ✅ Found good column matches, skipping individual rows")
             
         return enriched_data
     
@@ -297,7 +281,7 @@ class DataFetcherNode:
                         if value:
                             cross_refs[f"{sheet_name}!{cell_ref}"] = value[0][0] if value[0] else None
                 except Exception as e:
-                    logger.debug(f"Could not resolve reference in formula {formula}: {e}")
+                    pass
                     
         return cross_refs
 
@@ -509,9 +493,6 @@ class SearchEngineV2:
     
     def _setup_claude_client(self):
         """Setup Claude API client"""
-        if not ANTHROPIC_AVAILABLE:
-            raise ImportError("anthropic package required for SearchEngineV2")
-            
         api_key = self._load_claude_key()
         if not api_key:
             raise ValueError("Claude API key not found")
@@ -536,31 +517,17 @@ class SearchEngineV2:
     def search(self, query: str) -> Dict:
         """Main search method using LangGraph pipeline"""
         
-        logger.info(f"\n🔍 LangGraph Search Pipeline for: '{query}'")
-        
         # Step 1: Use existing RAG retriever for initial filtering
-        logger.info("📡 Step 1: Initial filtering with RAG retriever...")
         retriever_results = self.retriever.retrieve(query, top_k=10)
-        logger.info(f"   Found {len(retriever_results)} initial candidates")
         
         # Step 2: Query analysis and planning
-        logger.info("🧠 Step 2: Query analysis and data planning...")
         plan = self.query_analyzer.analyze_query(query, retriever_results)
-        logger.info(f"   Plan: {plan.analysis_type} analysis of {len(plan.target_concepts)} concepts")
         
         # Step 3: Targeted data fetching
-        logger.info("📊 Step 3: Fetching targeted data...")
         enriched_data = self.data_fetcher.fetch_targeted_data(plan)
-        logger.info(f"   Fetched {len(enriched_data)} enriched data rows")
         
         # Step 4: Insight generation
-        logger.info("🔬 Step 4: Generating insights with pandas...")
         insights = self.insight_generator.generate_insights(enriched_data, plan, query)
-        logger.info("   Analysis complete!")
-        
-        # Only show detailed breakdown in debug mode
-        if self.debug:
-            self._print_detailed_results(enriched_data, insights, plan)
         
         return {
             "query": query,
@@ -568,52 +535,4 @@ class SearchEngineV2:
             "enriched_data": [asdict(d) for d in enriched_data],
             "insights": insights,
             "status": "success"
-        }
-    
-    def _print_detailed_results(self, enriched_data: List[EnrichedRowData], insights: Dict, plan: DataFetchPlan):
-        """Print detailed breakdown of what was found and analyzed"""
-        
-        logger.info(f"\n{'='*80}")
-        logger.info(f"📋 DETAILED RESULTS BREAKDOWN")
-        logger.info(f"{'='*80}")
-        
-        # Show what concepts were actually found
-        logger.info(f"\n🎯 CONCEPTS ANALYZED:")
-        for i, data in enumerate(enriched_data, 1):
-            logger.info(f"   {i}. {data.first_cell_value}")
-            logger.info(f"      📍 Location: {data.sheet}!{data.cell_addresses}")
-            logger.info(f"      📊 Values: {data.values}")
-            if data.formulas:
-                logger.info(f"      🧮 Formulas: {data.formulas}")
-            if data.cross_references:
-                logger.info(f"      🔗 References: {data.cross_references}")
-            logger.info("")
-        
-        # Show pandas dataframe structure
-        if enriched_data:
-            logger.info(f"🐼 PANDAS DATAFRAME STRUCTURE:")
-            df = self.insight_generator._create_analysis_dataframe(enriched_data)
-            logger.info(f"   Shape: {df.shape} (rows x columns)")
-            logger.info(f"   Index (Concepts): {list(df.index)}")
-            logger.info(f"   Columns: {list(df.columns)}")
-            logger.info(f"\n   📊 DATA:")
-            logger.info(df.to_string())
-            logger.info("")
-        
-        # Show detailed analysis results
-        if 'pandas_analysis' in insights:
-            logger.info(f"🔬 DETAILED ANALYSIS RESULTS:")
-            for analysis_type, results in insights['pandas_analysis'].items():
-                logger.info(f"\n   📈 {analysis_type.upper()}:")
-                if isinstance(results, dict):
-                    for key, value in results.items():
-                        logger.info(f"      {key}: {value}")
-                else:
-                    logger.info(f"      {results}")
-        
-        # Show the business context
-        if 'business_narrative' in insights:
-            logger.info(f"\n�� BUSINESS INSIGHTS:")
-            logger.info(f"   {insights['business_narrative']}")
-        
-        logger.info(f"\n{'='*80}") 
+        } 
