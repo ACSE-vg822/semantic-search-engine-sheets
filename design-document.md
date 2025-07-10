@@ -54,7 +54,6 @@ The Semantic Search Engine for Spreadsheets is an AI-powered system that enables
   - Authenticates with Google Sheets API using service account credentials
   - Parses spreadsheet content including values, formulas, and metadata
   - Builds structured knowledge graph from raw spreadsheet data
-  - Handles cross-sheet reference detection
 
 #### **Knowledge Representation** (Data Models)
 
@@ -119,7 +118,7 @@ class RowMetadata:
 #### **Calculation Engine** (`src/semantic_search/`)
 
 - **CalculationEngine**: Handles computational queries
-- **Supported Operations**: sum, average, count, min, max, divide, multiply, subtract, add, percentage
+- **Supported Operations**: sum, average, count, min, max
 - **Query Parsing**: Uses Claude LLM to parse natural language into structured calculation requests
 
 #### **User Interface** (`streamlit_app.py`)
@@ -131,42 +130,9 @@ class RowMetadata:
   - Expandable result cards with detailed metadata
   - Caching for improved performance
 
-## 3. Technology Stack
+## 3. Core Workflows
 
-### 3.1 Core Dependencies
-
-```python
-# AI/ML Stack
-anthropic              # Claude LLM integration
-sentence-transformers  # Semantic embeddings
-langgraph             # Workflow orchestration
-langchain             # LLM framework
-langchain-anthropic   # Claude integration
-
-# Data Processing
-pandas                # Data manipulation
-numpy                 # Numerical computing
-gspread              # Google Sheets API
-google-auth          # Authentication
-
-# Web Interface
-streamlit            # UI framework
-plotly               # Data visualization
-
-# Utilities
-pydantic             # Data validation
-networkx             # Graph operations
-```
-
-### 3.2 External Services
-
-- **Google Sheets API**: Source data access
-- **Anthropic Claude**: LLM for query classification and parsing
-- **Sentence Transformers**: Semantic embeddings via Hugging Face models
-
-## 4. Core Workflows
-
-### 4.1 Search Workflow
+### 3.1 Search Workflow
 
 ```
 User Query Input
@@ -190,7 +156,7 @@ User Query Input
 └─────────────────┘
 ```
 
-### 4.2 Calculation Workflow
+### 3.2 Calculation Workflow
 
 ```
 User Query Input
@@ -256,176 +222,122 @@ User Query Input
 1. Query embedding generation
 2. Cosine similarity computation against corpus
 3. Top-k result selection with relevance scores
-4. Return tuples: `(metadata_object, similarity_score, entry_type)`
 
-### 5.3 LangGraph Orchestration
+## 5. Future Enhancements
 
-**State Management**: Typed dictionaries track workflow state
-**Node Functions**:
+### 5.1 Planned Improvements
 
-- **Classifier Node**: Claude LLM determines query intent
-- **Search Node**: RAG retrieval + LLM filtering
-- **Calculate Node**: Calculation engine integration
+**Enhanced Multi-Node Calculation Architecture**: The current single-node calculation flow limits our ability to handle complex, multi-step calculations that require validation, error correction, and iterative refinement. A sophisticated calculation system requires a multi-node LangGraph architecture with the following components:
 
-**Routing Logic**: Conditional edges based on classification results
+#### **Calculation Workflow 2.0: Multi-Node Architecture**
 
-### 5.4 Calculation Engine
+```
+User Calculation Query
+         │
+         ▼
+┌─────────────────┐
+│   Planner Node  │ ──▶ 1. Parse complex calculation request
+│                 │     2. Break down into sub-calculations
+│                 │     3. Identify data dependencies
+│                 │     4. Create execution plan with steps
+└─────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Validator Node  │ ──▶ 1. Validate plan feasibility
+│                 │     2. Check data availability
+│                 │     3. Verify mathematical logic
+│                 │     4. Flag potential issues
+└─────────────────┘
+         │
+   ┌─────┴─────┐
+   │ Valid?    │
+   └─────┬─────┘
+      No │              Yes
+         │              │
+         ▼              ▼
+┌─────────────────┐  ┌─────────────────┐
+│ Replanner Node  │  │ Execution Node  │
+│                 │  │                 │
+│ 1. Identify     │  │ 1. Execute plan │
+│    issues       │  │    step-by-step │
+│ 2. Adjust plan  │  │ 2. Handle data  │
+│ 3. Find alt.    │  │    extraction   │
+│    data sources │  │ 3. Perform      │
+│ 4. Simplify     │  │    calculations │
+│    if needed    │  │ 4. Track inter- │
+└─────────┬───────┘  │    mediate      │
+          │          │    results      │
+          ▲          └─────────────────┘
+          │                   │
+    (re-validate)             │
+          │                   │
+                              ▼
+                            ┌─────────────────┐
+                            │ Result Formatter│ ──▶ 1. Format final results
+                            │     Node        │     2. Create explanations
+                            │                 │     3. Show calculation steps
+                            │                 │     4. Highlight data sources
+                            └─────────────────┘
+```
 
-**Query Parsing**: Claude LLM extracts:
+#### **Node Responsibilities:**
+
+**Planner Node:**
+
+- Decomposes complex queries into sequential calculation steps
+- Maps business concepts to specific data sources
+- Creates dependency graphs for multi-step calculations
+- Handles queries like "Calculate profit margin trend over 3 quarters"
+
+**Validator Node:**
+
+- Verifies mathematical validity of the plan
+- Checks data availability and completeness
+- Validates business logic (e.g., ratios should use compatible units)
+- Ensures calculations are feasible with available data
+
+**Replanner Node:**
+
+- Triggered when validation fails
+- Suggests alternative data sources or calculation methods
+- Simplifies complex requests when data is insufficient
+- Provides fallback strategies (e.g., approximate calculations)
+
+**Execution Node:**
+
+- Executes validated plans step-by-step
+- Maintains state between calculation steps
+- Handles intermediate result storage
+- Provides detailed audit trail of calculations
+
+#### **Advanced Calculation Capabilities:**
+
+1. **Multi-Step Calculations**: "Calculate ROI for each product line, then rank by performance"
+2. **Cross-Sheet Analysis**: "Compare Q1 actuals vs budget across all departments"
+3. **Trend Analysis**: "Show revenue growth rate for the last 6 months"
+4. **Conditional Logic**: "Sum sales where region is 'North' and quarter is 'Q4'"
+5. **Formula Recreation**: "Rebuild the profit calculation used in the original spreadsheet"
+
+#### **Error Handling & Recovery:**
+
+- **Data Validation**: Check for missing values, data type mismatches
+- **Calculation Verification**: Validate intermediate results for reasonableness
+- **Alternative Strategies**: When primary calculation fails, suggest approximations
+- **User Feedback**: Explain why certain calculations cannot be performed
+
+#### **State Management:**
 
 ```python
-@dataclass
-class CalculationRequest:
-    operation: Literal["sum", "average", "count", ...]
-    target_concepts: List[str]  # e.g., ["actual revenue", "net profit"]
-    filters: Optional[Dict[str, str]]  # e.g., {"sheet": "Q1 Data"}
+class CalculationState(TypedDict):
+    user_query: str
+    calculation_plan: Optional[List[CalculationStep]]
+    validation_results: Optional[ValidationReport]
+    execution_status: Optional[ExecutionProgress]
+    intermediate_results: Optional[Dict[str, float]]
+    final_result: Optional[CalculationResult]
+    error_state: Optional[ErrorContext]
+    replanning_attempts: int
 ```
 
-**Data Identification**: RAG-based search for relevant numerical data
-**Value Extraction**: Fresh spreadsheet data fetch for current values
-**Calculation Execution**: Mathematical operations on extracted data
-
-## 6. Key Features & Capabilities
-
-### 6.1 Semantic Understanding
-
-**Business Concept Recognition**:
-
-- Revenue ≈ Sales ≈ Income
-- Profit ≈ Earnings ≈ Net Income
-- Efficiency ≈ Productivity ≈ Performance
-
-**Context Interpretation**:
-
-- Distinguishes "Marketing Spend" (cost) from "Marketing ROI" (efficiency)
-- Recognizes formula semantics: `=B5/B6` in "Margin %" column = margin calculation
-
-### 6.2 Natural Language Processing
-
-**Query Types Supported**:
-
-- **Conceptual**: "Find all profitability metrics"
-- **Functional**: "Show percentage calculations"
-- **Comparative**: "Budget vs actual analysis"
-- **Computational**: "Calculate total revenue"
-
-### 6.3 Multi-Sheet Intelligence
-
-**Cross-Sheet Understanding**:
-
-- Reference detection using regex: `(?:'([^']+)')|(?:(\w+)![$]?[A-Z]+[$]?\d+)`
-- Relationship tracking between related sheets
-- Context-aware search across worksheet boundaries
-
-### 6.4 Result Intelligence
-
-**Ranking Factors**:
-
-- Semantic relevance score
-- Business context importance
-- Formula complexity analysis
-- Data recency considerations
-
-**Output Format**:
-
-- Contextual explanations
-- Relevance justifications
-- Source data transparency
-- Business concept mapping
-
-## 7. Performance & Scalability
-
-### 7.1 Optimization Strategies
-
-**Caching Architecture**:
-
-- Knowledge graph caching in Streamlit session state
-- Retriever instance reuse across queries
-- Embedding precomputation and storage
-
-**Lazy Loading**:
-
-- Spreadsheet parser initialization on-demand
-- Fresh data fetching only for calculations
-
-### 7.2 Current Limitations
-
-**Scale Constraints**:
-
-- In-memory embedding storage
-- Single-spreadsheet focus
-- Real-time API calls for calculations
-
-**Processing Bottlenecks**:
-
-- Google Sheets API rate limits
-- LLM inference latency
-- Large spreadsheet parsing time
-
-## 8. Security & Authentication
-
-### 8.1 Google Sheets Access
-
-**Service Account Authentication**:
-
-```toml
-[google_credentials]
-type = "service_account"
-project_id = "your-project-id"
-private_key = "-----BEGIN PRIVATE KEY-----\n..."
-client_email = "service-account@project.iam.gserviceaccount.com"
-```
-
-**Permission Model**: Read-only access to shared spreadsheets
-
-### 8.2 API Key Management
-
-**Claude API**: Secured via Streamlit secrets
-**Access Control**: Application-level authentication required
-
-## 9. Testing & Validation
-
-### 9.1 Test Data Sources
-
-**Provided Test Spreadsheets**:
-
-- Financial Model: Complex financial calculations and projections
-- Sales Dashboard: Sales metrics and performance data
-
-### 9.2 Evaluation Criteria
-
-**Search Quality**:
-
-- Semantic relevance of retrieved results
-- Business context accuracy
-- Cross-sheet relationship detection
-
-**Calculation Accuracy**:
-
-- Mathematical operation correctness
-- Data source identification precision
-- Result explanation clarity
-
-## 10. Future Enhancements
-
-### 10.1 Planned Improvements
-
-**Real-Time Updates**: Live spreadsheet change monitoring
-**Enhanced Multi-Sheet**: Advanced cross-sheet analytics
-**Performance Optimization**: Distributed caching and processing
-**Advanced Calculations**: Complex formula interpretation
-
-### 10.2 Scalability Roadmap
-
-**Enterprise Features**:
-
-- Multi-spreadsheet corpus management
-- User access control and permissions
-- Advanced analytics and reporting
-- Integration with business intelligence tools
-
-## 11. Conclusion
-
-This semantic search engine represents a significant advancement in spreadsheet interaction, bridging the gap between how users think about data and how they can access it. By combining state-of-the-art NLP techniques with domain-specific knowledge representation, the system enables intuitive, natural language-based exploration of complex spreadsheet data.
-
-The modular architecture supports extensibility while maintaining performance, and the use of established frameworks (LangGraph, LangChain, Streamlit) ensures maintainability and developer productivity. The system successfully addresses the core challenge of semantic search in business documents while providing a foundation for advanced analytical capabilities.
+This architecture enables handling complex business calculations that require multiple data sources, intermediate calculations, and sophisticated error handling - far beyond the current single-step calculation approach.
