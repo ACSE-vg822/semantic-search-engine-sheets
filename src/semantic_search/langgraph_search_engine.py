@@ -275,7 +275,7 @@ Try rephrasing as a search query instead, like:
         for i, result in enumerate(filtered_results, 1):
             response += f"**{i}. {result['name']}** ({result['type']})\n"
             response += f"   📍 Sheet: {result['sheet']}\n"
-            response += f"   📊 Type: {result['data_type']}\n"
+            #response += f"   📊 Type: {result['data_type']}\n"
             response += f"   📍 Range: {result.get('addresses', 'N/A')}\n"
             response += f"   🎯 Relevance: {result.get('relevance_explanation', 'N/A')}\n"
             response += f"   📝 Sample: {', '.join(map(str, result['sample_values'][:3]))}\n\n"

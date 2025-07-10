@@ -11,18 +11,37 @@ from src.semantic_search.langgraph_search_engine import LangGraphSearchEngine
 def initialize_search_engine(spreadsheet_id: str) -> tuple[LangGraphSearchEngine, str]:
     """Initialize the search engine with a given spreadsheet ID"""
     try:
-        with st.spinner("🔧 Parsing spreadsheet and building knowledge graph..."):
-            parser = SpreadsheetParserAdvanced()
-            spreadsheet = parser.parse(spreadsheet_id)
-            kg = parser.build_knowledge_graph(spreadsheet)
-            
-        with st.spinner("🧠 Setting up RAG retriever..."):
-            retriever = SpreadsheetRetriever(kg, debug=False)
+        # Check if we already have cached components for this spreadsheet
+        cache_key = f"kg_{spreadsheet_id}"
+        retriever_key = f"retriever_{spreadsheet_id}"
+        title_key = f"title_{spreadsheet_id}"
+        
+        # Try to get cached knowledge graph and retriever
+        if cache_key in st.session_state and retriever_key in st.session_state:
+            st.info("🚀 Using cached knowledge graph and retriever")
+            kg = st.session_state[cache_key]
+            retriever = st.session_state[retriever_key]
+            spreadsheet_title = st.session_state[title_key]
+        else:
+            # Build new components if not cached
+            with st.spinner("🔧 Parsing spreadsheet and building knowledge graph..."):
+                parser = SpreadsheetParserAdvanced()
+                spreadsheet = parser.parse(spreadsheet_id)
+                kg = parser.build_knowledge_graph(spreadsheet)
+                
+            with st.spinner("🧠 Setting up RAG retriever..."):
+                retriever = SpreadsheetRetriever(kg, debug=False)
+                
+            # Cache the components
+            st.session_state[cache_key] = kg
+            st.session_state[retriever_key] = retriever
+            st.session_state[title_key] = spreadsheet.title
+            spreadsheet_title = spreadsheet.title
             
         with st.spinner("🚀 Initializing LangGraph search engine..."):
             search_engine = LangGraphSearchEngine(retriever)
             
-        return search_engine, spreadsheet.title
+        return search_engine, spreadsheet_title
         
     except Exception as e:
         st.error(f"❌ Error initializing search engine: {str(e)}")
@@ -142,24 +161,19 @@ def main():
             st.error("❌ Please enter a search query")
             return
             
-        # Initialize search engine if not cached
-        if "search_engine" not in st.session_state or st.session_state.get("current_spreadsheet_id") != spreadsheet_id:
-            search_engine, spreadsheet_title = initialize_search_engine(spreadsheet_id)
-            if search_engine is None:
-                return
-            
-            st.session_state.search_engine = search_engine
-            st.session_state.current_spreadsheet_id = spreadsheet_id
-            st.session_state.spreadsheet_title = spreadsheet_title
+        # Initialize search engine (will use cached components if available)
+        search_engine, spreadsheet_title = initialize_search_engine(spreadsheet_id)
+        if search_engine is None:
+            return
         
         # Display current spreadsheet info
-        st.info(f"📊 **Spreadsheet:** {st.session_state.get('spreadsheet_title', 'Unknown')}")
+        st.info(f"📊 **Spreadsheet:** {spreadsheet_title}")
         
         # Perform search
         try:
             with st.spinner(f"🔍 Processing query: '{query}'..."):
                 start_time = time.time()
-                result = st.session_state.search_engine.search(query)
+                result = search_engine.search(query)
                 end_time = time.time()
                 
             st.success(f"✅ Search completed in {end_time - start_time:.2f} seconds")
