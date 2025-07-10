@@ -312,6 +312,56 @@ Respond with ONLY JSON, no other text."""
         print(f"🔢 DEBUG: Extracted {len(numeric_values)} total values from column '{column_meta.header}': {numeric_values}")
         return numeric_values
     
+    def extract_all_row_values(self, row_meta: RowMetadata) -> List[float]:
+        """Extract ALL numeric values from a row using raw spreadsheet data"""
+        numeric_values = []
+        sheet_name = row_meta.sheet
+        
+        # Get all cells for this sheet
+        if sheet_name not in self.spreadsheet_data.cells:
+            print(f"🔢 DEBUG: Sheet '{sheet_name}' not found in spreadsheet data")
+            return numeric_values
+        
+        sheet_cells = self.spreadsheet_data.cells[sheet_name]
+        row_idx = row_meta.row_number
+        
+        print(f"🔢 DEBUG: Extracting values from row {row_idx} in sheet '{sheet_name}'")
+        
+        # Extract values from this row, but be more selective
+        # Only extract from columns that contain data (skip first column which is label)
+        row_cells = [cell for cell in sheet_cells.values() if cell.row == row_idx]
+        row_cells.sort(key=lambda c: c.col)  # Sort by column order
+        
+        # Find the range of meaningful data (skip empty columns at the end)
+        data_cells = []
+        for cell in row_cells:
+            if cell.col > 1 and cell.value and str(cell.value).strip():  # Skip first column and empty cells
+                # Only include if it looks like numeric data or could be converted
+                try:
+                    if isinstance(cell.value, (int, float)):
+                        data_cells.append(cell)
+                    elif isinstance(cell.value, str):
+                        clean_value = re.sub(r'[,$%]', '', str(cell.value))
+                        if clean_value.replace('.', '', 1).replace('-', '', 1).isdigit():
+                            data_cells.append(cell)
+                except (ValueError, TypeError):
+                    continue
+        
+        # Extract numeric values from the identified data cells
+        for cell in data_cells:
+            try:
+                if isinstance(cell.value, (int, float)):
+                    numeric_values.append(float(cell.value))
+                elif isinstance(cell.value, str):
+                    clean_value = re.sub(r'[,$%]', '', str(cell.value))
+                    if clean_value.replace('.', '', 1).replace('-', '', 1).isdigit():
+                        numeric_values.append(float(clean_value))
+            except (ValueError, TypeError):
+                continue
+        
+        print(f"🔢 DEBUG: Extracted {len(numeric_values)} total values from row '{row_meta.first_cell_value}': {numeric_values}")
+        return numeric_values
+    
     def extract_numeric_values(self, data_sources: List[Tuple[Union[ColumnMetadata, RowMetadata], float, str]]) -> List[float]:
         """Extract numeric values from identified data sources"""
         numeric_values = []
@@ -334,20 +384,10 @@ Respond with ONLY JSON, no other text."""
                 source_values.extend(column_values)
                 numeric_values.extend(column_values)
             else:  # row
-                # Extract numeric values from row samples
-                for value in meta.sample_values:
-                    try:
-                        if isinstance(value, (int, float)):
-                            source_values.append(float(value))
-                            numeric_values.append(float(value))
-                        elif isinstance(value, str):
-                            clean_value = re.sub(r'[,$%]', '', str(value))
-                            if clean_value.replace('.', '', 1).replace('-', '', 1).isdigit():
-                                parsed_value = float(clean_value)
-                                source_values.append(parsed_value)
-                                numeric_values.append(parsed_value)
-                    except (ValueError, TypeError):
-                        continue
+                # Extract ALL numeric values from the entire row
+                row_values = self.extract_all_row_values(meta)
+                source_values.extend(row_values)
+                numeric_values.extend(row_values)
             
             print(f"🔢 DEBUG: Extracted {len(source_values)} values from {source_name}: {source_values}")
         
