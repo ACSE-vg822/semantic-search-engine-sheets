@@ -401,7 +401,7 @@ Respond with ONLY JSON, no other text."""
                     "type": "row", 
                     "name": meta.first_cell_value,
                     "sheet": meta.sheet,
-                    "range": ", ".join(meta.cell_addresses) if meta.cell_addresses else "N/A",
+                    "range": meta.addresses,
                     "sample_values": meta.sample_values[:3]
                 })
         

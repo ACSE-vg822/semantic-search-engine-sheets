@@ -122,7 +122,7 @@ Respond with ONLY the word "search" or "calculate" - nothing else."""
                     "sheet": meta.sheet,
                     "data_type": meta.data_type,
                     "sample_values": meta.sample_values,
-                    "addresses": ", ".join(meta.cell_addresses) if meta.cell_addresses else "N/A",
+                    "addresses": meta.addresses,
                     "score": score
                 }
             formatted_results.append(result_info)

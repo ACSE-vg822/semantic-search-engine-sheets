@@ -54,7 +54,7 @@ class RowMetadata:
     data_type: str
     sample_values: List[Union[str, float, int]]
     formulae: List[str]
-    cell_addresses: List[str]
+    addresses: str                            # Range format (e.g., "A6:F6") - now consistent with ColumnMetadata
     col_headers: List[str]
     cross_sheet_refs: Optional[List[str]] = None
 
@@ -208,7 +208,7 @@ class SpreadsheetParserAdvanced:
                     data_type=row_cells[1].data_type if len(row_cells) > 1 else "unknown",
                     sample_values=row_values[:5],
                     formulae=row_formulae,
-                    cell_addresses=[address_range] if address_range else [],
+                    addresses=address_range,
                     col_headers=row_headers,
                     cross_sheet_refs=cross_refs or None
                 )
