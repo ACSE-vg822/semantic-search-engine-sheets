@@ -9,7 +9,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain.schema import HumanMessage, SystemMessage
 
 from src.rag.retriever import SpreadsheetRetriever
-from src.data_ingestion.spreadsheet_parser_advance import ColumnMetadata, RowMetadata, SpreadsheetData
+from src.data_ingestion.spreadsheet_parser_advance import ColumnMetadata, RowMetadata
 from src.semantic_search.calculation_engine import CalculationEngine
 import streamlit as st
 
@@ -28,12 +28,12 @@ class SearchState(TypedDict):
 class LangGraphSearchEngine:
     """Simple LangGraph-based search engine for spreadsheet data"""
     
-    def __init__(self, retriever: SpreadsheetRetriever, spreadsheet_data: SpreadsheetData, llm_model: str = "claude-3-haiku-20240307"):
+    def __init__(self, retriever: SpreadsheetRetriever, spreadsheet_id: str, llm_model: str = "claude-3-haiku-20240307"):
         self.retriever = retriever
-        self.spreadsheet_data = spreadsheet_data
+        self.spreadsheet_id = spreadsheet_id
         self.api_key = st.secrets["claude_api_key"]
         self.llm = ChatAnthropic(model=llm_model, temperature=0, api_key=self.api_key)
-        self.calculation_engine = CalculationEngine(retriever, spreadsheet_data, llm_model)
+        self.calculation_engine = CalculationEngine(retriever, spreadsheet_id, llm_model)
         self.graph = self._build_graph()
     
     def _build_graph(self) -> StateGraph:
@@ -356,7 +356,7 @@ if __name__ == "__main__":
     retriever = SpreadsheetRetriever(kg, debug=True)
     
     # Create LangGraph search engine
-    search_engine = LangGraphSearchEngine(retriever, spreadsheet)
+    search_engine = LangGraphSearchEngine(retriever, TEST_SPREADSHEET_ID)
     
     print("✅ Search engine ready!")
     

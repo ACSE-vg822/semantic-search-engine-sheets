@@ -15,14 +15,12 @@ def initialize_search_engine(spreadsheet_id: str) -> tuple[LangGraphSearchEngine
         cache_key = f"kg_{spreadsheet_id}"
         retriever_key = f"retriever_{spreadsheet_id}"
         title_key = f"title_{spreadsheet_id}"
-        spreadsheet_data_key = f"spreadsheet_data_{spreadsheet_id}"
         
-        # Try to get cached knowledge graph, retriever, and raw data
-        if cache_key in st.session_state and retriever_key in st.session_state and spreadsheet_data_key in st.session_state:
+        # Try to get cached knowledge graph and retriever
+        if cache_key in st.session_state and retriever_key in st.session_state:
             st.info("🚀 Using cached knowledge graph and retriever")
             kg = st.session_state[cache_key]
             retriever = st.session_state[retriever_key]
-            spreadsheet = st.session_state[spreadsheet_data_key]
             spreadsheet_title = st.session_state[title_key]
         else:
             # Build new components if not cached
@@ -38,11 +36,10 @@ def initialize_search_engine(spreadsheet_id: str) -> tuple[LangGraphSearchEngine
             st.session_state[cache_key] = kg
             st.session_state[retriever_key] = retriever
             st.session_state[title_key] = spreadsheet.title
-            st.session_state[spreadsheet_data_key] = spreadsheet
             spreadsheet_title = spreadsheet.title
             
         with st.spinner("🚀 Initializing LangGraph search engine..."):
-            search_engine = LangGraphSearchEngine(retriever, spreadsheet)
+            search_engine = LangGraphSearchEngine(retriever, spreadsheet_id)
             
         return search_engine, spreadsheet_title
         
@@ -166,7 +163,6 @@ def main():
         spreadsheet_id = st.text_input(
             "📊 Google Spreadsheet ID",
             value=st.session_state.get("spreadsheet_id", ""),
-            placeholder="1EvWvbiJIIIASse3b9iHP1JAOTmnw3Xur7oRpG-o9Oxc",
             help="Enter the ID from your Google Sheets URL"
         )
         

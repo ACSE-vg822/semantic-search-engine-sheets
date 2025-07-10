@@ -8,7 +8,7 @@ from langchain.schema import HumanMessage, SystemMessage
 import streamlit as st
 
 from src.rag.retriever import SpreadsheetRetriever
-from src.data_ingestion.spreadsheet_parser_advance import ColumnMetadata, RowMetadata, SpreadsheetData
+from src.data_ingestion.spreadsheet_parser_advance import ColumnMetadata, RowMetadata, SpreadsheetData, SpreadsheetParserAdvanced
 
 
 @dataclass
@@ -33,11 +33,23 @@ class CalculationResult:
 class CalculationEngine:
     """Engine for parsing and executing calculations on spreadsheet data"""
     
-    def __init__(self, retriever: SpreadsheetRetriever, spreadsheet_data: SpreadsheetData, llm_model: str = "claude-3-haiku-20240307"):
+    def __init__(self, retriever: SpreadsheetRetriever, spreadsheet_id: str, llm_model: str = "claude-3-haiku-20240307"):
         self.retriever = retriever
-        self.spreadsheet_data = spreadsheet_data
+        self.spreadsheet_id = spreadsheet_id
         self.api_key = st.secrets["claude_api_key"]
         self.llm = ChatAnthropic(model=llm_model, temperature=0, api_key=self.api_key)
+        self._parser = None  # Lazy initialization
+    
+    def _get_parser(self) -> SpreadsheetParserAdvanced:
+        """Get or create the spreadsheet parser (lazy initialization)"""
+        if self._parser is None:
+            self._parser = SpreadsheetParserAdvanced()
+        return self._parser
+    
+    def _get_fresh_spreadsheet_data(self) -> SpreadsheetData:
+        """Fetch fresh spreadsheet data from Google Sheets"""
+        parser = self._get_parser()
+        return parser.parse(self.spreadsheet_id)
     
     def parse_calculation_query(self, query: str) -> CalculationRequest:
         """Parse natural language query into structured calculation request"""
@@ -270,16 +282,19 @@ Respond with ONLY JSON, no other text."""
         return filtered_results[:10]
     
     def extract_all_column_values(self, column_meta: ColumnMetadata) -> List[float]:
-        """Extract ALL numeric values from a column using raw spreadsheet data"""
+        """Extract ALL numeric values from a column using fresh spreadsheet data"""
+        # Fetch fresh data for each calculation
+        spreadsheet_data = self._get_fresh_spreadsheet_data()
+        
         numeric_values = []
         sheet_name = column_meta.sheet
         
         # Get all cells for this sheet
-        if sheet_name not in self.spreadsheet_data.cells:
+        if sheet_name not in spreadsheet_data.cells:
             print(f"🔢 DEBUG: Sheet '{sheet_name}' not found in spreadsheet data")
             return numeric_values
         
-        sheet_cells = self.spreadsheet_data.cells[sheet_name]
+        sheet_cells = spreadsheet_data.cells[sheet_name]
         
         # Find the column index by looking for the header
         header_cell = None
@@ -313,16 +328,19 @@ Respond with ONLY JSON, no other text."""
         return numeric_values
     
     def extract_all_row_values(self, row_meta: RowMetadata) -> List[float]:
-        """Extract ALL numeric values from a row using raw spreadsheet data"""
+        """Extract ALL numeric values from a row using fresh spreadsheet data"""
+        # Fetch fresh data for each calculation
+        spreadsheet_data = self._get_fresh_spreadsheet_data()
+        
         numeric_values = []
         sheet_name = row_meta.sheet
         
         # Get all cells for this sheet
-        if sheet_name not in self.spreadsheet_data.cells:
+        if sheet_name not in spreadsheet_data.cells:
             print(f"🔢 DEBUG: Sheet '{sheet_name}' not found in spreadsheet data")
             return numeric_values
         
-        sheet_cells = self.spreadsheet_data.cells[sheet_name]
+        sheet_cells = spreadsheet_data.cells[sheet_name]
         row_idx = row_meta.row_number
         
         print(f"🔢 DEBUG: Extracting values from row {row_idx} in sheet '{sheet_name}'")
