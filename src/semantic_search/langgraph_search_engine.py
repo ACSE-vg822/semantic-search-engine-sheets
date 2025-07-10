@@ -9,7 +9,8 @@ from langchain_anthropic import ChatAnthropic
 from langchain.schema import HumanMessage, SystemMessage
 
 from src.rag.retriever import SpreadsheetRetriever
-from src.data_ingestion.spreadsheet_parser_advance import ColumnMetadata, RowMetadata
+from src.data_ingestion.spreadsheet_parser_advance import ColumnMetadata, RowMetadata, SpreadsheetData
+from src.semantic_search.calculation_engine import CalculationEngine
 import streamlit as st
 
 
@@ -27,10 +28,12 @@ class SearchState(TypedDict):
 class LangGraphSearchEngine:
     """Simple LangGraph-based search engine for spreadsheet data"""
     
-    def __init__(self, retriever: SpreadsheetRetriever, llm_model: str = "claude-3-haiku-20240307"):
+    def __init__(self, retriever: SpreadsheetRetriever, spreadsheet_data: SpreadsheetData, llm_model: str = "claude-3-haiku-20240307"):
         self.retriever = retriever
+        self.spreadsheet_data = spreadsheet_data
         self.api_key = st.secrets["claude_api_key"]
         self.llm = ChatAnthropic(model=llm_model, temperature=0, api_key=self.api_key)
+        self.calculation_engine = CalculationEngine(retriever, spreadsheet_data, llm_model)
         self.graph = self._build_graph()
     
     def _build_graph(self) -> StateGraph:
@@ -41,8 +44,8 @@ class LangGraphSearchEngine:
         workflow.add_node("classifier", self._classifier_node)
         workflow.add_node("search", self._search_node)
         
-        # Add a placeholder calculate node
-        workflow.add_node("calculate_placeholder", self._calculate_placeholder_node)
+        # Add the calculation node
+        workflow.add_node("calculate", self._calculate_node)
         
         # Add edges
         workflow.set_entry_point("classifier")
@@ -51,11 +54,11 @@ class LangGraphSearchEngine:
             self._route_query,
             {
                 "search": "search",
-                "calculate": "calculate_placeholder",
+                "calculate": "calculate",
             }
         )
         workflow.add_edge("search", END)
-        workflow.add_edge("calculate_placeholder", END)
+        workflow.add_edge("calculate", END)
         
         return workflow.compile()
     
@@ -119,7 +122,7 @@ Respond with ONLY the word "search" or "calculate" - nothing else."""
                     "sheet": meta.sheet,
                     "data_type": meta.data_type,
                     "sample_values": meta.sample_values,
-                    "addresses": meta.cell_addresses,
+                    "addresses": ", ".join(meta.cell_addresses) if meta.cell_addresses else "N/A",
                     "score": score
                 }
             formatted_results.append(result_info)
@@ -229,36 +232,69 @@ Please analyze these results and return only the relevant ones with explanations
             "final_response": self._format_final_response(filtered_results, explanation)
         }
     
-    def _calculate_placeholder_node(self, state: SearchState) -> SearchState:
-        """Placeholder node for calculate queries - to be implemented later"""
+    def _calculate_node(self, state: SearchState) -> SearchState:
+        """Calculate node: Perform calculations on spreadsheet data"""
         
-        print("🧮 Calculate functionality not yet implemented")
-        
-        final_response = f"""🧮 **Calculate Query Detected**
+        try:
+            # Use the calculation engine to process the query
+            calculation_result = self.calculation_engine.calculate(state["user_query"])
+            
+            # Format the response
+            final_response = f"""🧮 **Calculation Results**
+
+**Query:** "{state['user_query']}"
+
+**Result:** {calculation_result.formatted_result}
+
+**Operation:** {calculation_result.operation.title()}
+
+**Explanation:** {calculation_result.explanation}
+
+**Data Sources Used:**
+"""
+            
+            for i, data_source in enumerate(calculation_result.data_used, 1):
+                final_response += f"\n{i}. **{data_source['name']}** ({data_source['type']})"
+                final_response += f"\n   📍 Sheet: {data_source['sheet']}"
+                final_response += f"\n   📍 Range: {data_source['range']}"
+                final_response += f"\n   📝 Sample: {', '.join(map(str, data_source['sample_values']))}\n"
+            
+            if not calculation_result.data_used:
+                final_response += "\n❌ No relevant data sources were found for this calculation."
+            
+            return {
+                **state,
+                "rag_results": None,
+                "filtered_results": [],
+                "explanation": calculation_result.explanation,
+                "final_response": final_response
+            }
+            
+        except Exception as e:
+            error_response = f"""🚨 **Calculation Error**
 
 Query: "{state['user_query']}"
 
-⚠️ **Feature Coming Soon**: The calculate functionality is not yet implemented. 
+An error occurred while processing your calculation: {str(e)}
 
-For now, this query has been identified as a calculation request. In the future, this will:
-- Parse mathematical expressions from your query
-- Identify relevant data from the spreadsheet
-- Perform the requested calculations
-- Return computed results
+**Suggestions:**
+- Try rephrasing your query (e.g., "calculate total revenue", "sum all expenses")
+- Make sure the data you're looking for exists in the spreadsheet
+- Use specific terms that match your spreadsheet content
 
-Try rephrasing as a search query instead, like:
-- "show me revenue data" 
-- "find financial information"
-- "what revenue numbers do we have"
+**Alternative:** Try searching for the data first:
+- "show me revenue data"
+- "find financial information" 
+- "what numbers do we have"
 """
-        
-        return {
-            **state,
-            "rag_results": None,
-            "filtered_results": [],
-            "explanation": "Calculate functionality placeholder",
-            "final_response": final_response
-        }
+            
+            return {
+                **state,
+                "rag_results": None,
+                "filtered_results": [],
+                "explanation": f"Calculation error: {str(e)}",
+                "final_response": error_response
+            }
     
     def _route_query(self, state: SearchState) -> str:
         """Router function to determine next node based on query type"""
@@ -320,7 +356,7 @@ if __name__ == "__main__":
     retriever = SpreadsheetRetriever(kg, debug=True)
     
     # Create LangGraph search engine
-    search_engine = LangGraphSearchEngine(retriever)
+    search_engine = LangGraphSearchEngine(retriever, spreadsheet)
     
     print("✅ Search engine ready!")
     

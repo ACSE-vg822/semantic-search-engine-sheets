@@ -208,7 +208,7 @@ class SpreadsheetParserAdvanced:
                     data_type=row_cells[1].data_type if len(row_cells) > 1 else "unknown",
                     sample_values=row_values[:5],
                     formulae=row_formulae,
-                    cell_addresses=address_range,
+                    cell_addresses=[address_range] if address_range else [],
                     col_headers=row_headers,
                     cross_sheet_refs=cross_refs or None
                 )
