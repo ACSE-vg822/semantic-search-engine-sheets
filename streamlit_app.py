@@ -83,6 +83,13 @@ def display_search_results(result: Dict[str, Any]):
             data_type = raw_result.get("data_type", "")
             score = raw_result.get("score", 0)
             
+            # Extract formula information
+            if result_type == "column":
+                formula_info = raw_result.get("first_cell_formula")
+            else:  # row
+                formula_info = raw_result.get("formulae", [])
+            cross_sheet_refs = raw_result.get("cross_sheet_refs", [])
+            
             # Create sample data string from sample_values
             sample_text = ""
             if sample_values and isinstance(sample_values, dict):
@@ -118,8 +125,6 @@ def display_search_results(result: Dict[str, Any]):
                         st.write(f"• **Sheet:** {sheet_name}")
                     if range_info:
                         st.write(f"• **Range:** {range_info}")
-                    if data_type:
-                        st.write(f"• **Data Type:** {data_type}")
                     if score > 0:
                         st.write(f"• **Relevance Score:** {score:.3f}")
                     
@@ -131,6 +136,31 @@ def display_search_results(result: Dict[str, Any]):
                     if sample_text:
                         st.markdown("**🔍 Sample Data:**")
                         st.code(sample_text, language="text")
+                
+                # Show formula information if available
+                formula_section_shown = False
+                if result_type == "column" and formula_info:
+                    st.markdown("**🧮 Related Formula:**")
+                    st.code(formula_info, language="excel")
+                    formula_section_shown = True
+                elif result_type == "row" and formula_info and len(formula_info) > 0:
+                    st.markdown("**🧮 Related Formulas:**")
+                    for idx, formula in enumerate(formula_info[:3], 1):  # Show up to 3 formulas
+                        st.code(f"Cell {idx}: {formula}", language="excel")
+                    if len(formula_info) > 3:
+                        st.write(f"... and {len(formula_info) - 3} more formulas")
+                    formula_section_shown = True
+                
+                # Show cross-sheet references if available
+                if cross_sheet_refs and len(cross_sheet_refs) > 0:
+                    if not formula_section_shown:
+                        st.markdown("**🔗 Cross-Sheet References:**")
+                    else:
+                        st.markdown("**🔗 References other sheets:**")
+                    for ref in cross_sheet_refs[:3]:  # Show up to 3 references
+                        st.write(f"• {ref}")
+                    if len(cross_sheet_refs) > 3:
+                        st.write(f"... and {len(cross_sheet_refs) - 3} more references")
                 
                 # Show full raw data in a collapsible section
                 with st.expander("🔧 View Raw Data", expanded=False):

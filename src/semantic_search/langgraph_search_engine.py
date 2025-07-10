@@ -112,7 +112,9 @@ Respond with ONLY the word "search" or "calculate" - nothing else."""
                     "data_type": meta.data_type,
                     "sample_values": meta.sample_values,
                     "addresses": meta.addresses,
-                    "score": score
+                    "score": score,
+                    "first_cell_formula": meta.first_cell_formula,
+                    "cross_sheet_refs": meta.cross_sheet_refs
                 }
             else:  # row
                 result_info = {
@@ -123,7 +125,9 @@ Respond with ONLY the word "search" or "calculate" - nothing else."""
                     "data_type": meta.data_type,
                     "sample_values": meta.sample_values,
                     "addresses": meta.addresses,
-                    "score": score
+                    "score": score,
+                    "formulae": meta.formulae,
+                    "cross_sheet_refs": meta.cross_sheet_refs
                 }
             formatted_results.append(result_info)
         
