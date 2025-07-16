@@ -161,125 +161,151 @@ Respond with ONLY JSON, no other text."""
             original_query=query
         )
     
-    def identify_relevant_data(self, calc_request: CalculationRequest) -> List[Tuple[Union[ColumnMetadata, RowMetadata], float, str]]:
-        """Use RAG retriever to find relevant data for calculation"""
+
+    def identify_relevant_data_with_llm(self, calc_request: CalculationRequest) -> List[Tuple[Union[ColumnMetadata, RowMetadata], float, str]]:
+        """Use LLM to intelligently identify relevant data for calculations"""
         
-        # Build search query from calculation request
-        search_queries = []
+        # Get initial RAG results with broader search
+        rag_results = self.retriever.retrieve(calc_request.original_query, top_k=20)
+        
+        # Also search for each target concept
         for concept in calc_request.target_concepts:
-            search_queries.append(f"find {concept} data")
-            search_queries.append(f"{concept} calculations")
-            search_queries.append(f"{concept} numbers")
+            concept_results = self.retriever.retrieve(f"find {concept} data numbers", top_k=15)
+            rag_results.extend(concept_results)
         
-        # Get all relevant results
-        all_results = []
-        for search_query in search_queries:
-            results = self.retriever.retrieve(search_query, top_k=10)
-            all_results.extend(results)
-        
-        # Remove duplicates and sort by relevance
+        # Remove duplicates
         seen = set()
         unique_results = []
-        for meta, score, result_type in all_results:
-            # Create a unique identifier for deduplication
+        for meta, score, result_type in rag_results:
             if result_type == "column":
                 identifier = f"{meta.sheet}_{meta.header}"
             else:
-                identifier = f"{meta.sheet}_{meta.first_cell_value}_{meta.row_number}"
+                identifier = f"{meta.sheet}_{meta.first_cell_value}"
             
             if identifier not in seen:
                 seen.add(identifier)
                 unique_results.append((meta, score, result_type))
         
-        # Apply filters
-        filtered_results = []
-        
-        for meta, score, result_type in unique_results:
-            
-            # Filter by sheet if specified
-            if calc_request.filters and "sheet" in calc_request.filters:
-                target_sheet = calc_request.filters["sheet"]
-                if meta.sheet != target_sheet:
-                    continue
-            
-            # Filter by concept precision - avoid derivative concepts
-            # For each target concept, check if this is a precise match
-            is_precise_match = False
-            
+        # Format results for LLM analysis
+        formatted_results = []
+        for i, (meta, score, result_type) in enumerate(unique_results):
             if result_type == "column":
-                item_label = meta.header
-            else:
-                item_label = meta.first_cell_value
-            
-            for concept in calc_request.target_concepts:
-                concept_lower = concept.lower()
-                
-                # Get items to check based on result type
-                items_to_check = []
-                if result_type == "column":
-                    # For columns, check both header and sample values
-                    items_to_check.append(meta.header.lower())
-                    # Also check sample values which may contain the actual concept names
-                    for sample_val in meta.sample_values:
-                        if isinstance(sample_val, str):
-                            items_to_check.append(sample_val.lower())
-                else:
-                    # For rows, check first cell value
-                    items_to_check.append(meta.first_cell_value.lower())
-                
-                # Check each item for concept match
-                for item_name in items_to_check:
-                    
-                    # Exact match
-                    if item_name == concept_lower:
-                        is_precise_match = True
-                        break
-                    
-                    # Check if it starts with the concept (but filter out derivatives)
-                    if item_name.startswith(concept_lower):
-                        # Avoid derivatives like "Revenue Growth" when looking for "Revenue"
-                        derivative_words = ["growth", "rate", "ratio", "margin", "percentage", "change", "variance", "forecast", "budget", "plan"]
-                        
-                        # Get the part after the concept
-                        remainder = item_name[len(concept_lower):].strip()
-                        
-                        # If remainder is empty or just contains acceptable modifiers, it's a match
-                        if not remainder or remainder in ["(yr1)", "(yr2)", "(yr3)", "total", "sum"]:
-                            is_precise_match = True
-                            break
-                        
-                        # If remainder contains derivative words, skip it
-                        if any(word in remainder for word in derivative_words):
-                            continue
-                        else:
-                            is_precise_match = True
-                            break
-                    
-                    # Check if concept is in the name but more carefully
-                    if concept_lower in item_name:
-                        # Make sure it's not a derivative concept
-                        if concept_lower == "revenue":
-                            # Exclude things like "Revenue Growth", "Revenue Rate", etc.
-                            if any(word in item_name for word in ["growth", "rate", "ratio", "margin", "percentage"]):
-                                continue
-                        elif concept_lower == "profit":
-                            # For profit, be more inclusive but still exclude rates/margins
-                            if any(word in item_name for word in ["rate", "ratio", "percentage"]) and "margin" not in item_name:
-                                continue
-                        
-                        is_precise_match = True
-                        break
-                
-                # If we found a match for this concept, break out of concept loop
-                if is_precise_match:
-                    break
-            
-            if is_precise_match:
-                filtered_results.append((meta, score, result_type))
+                result_info = {
+                    "index": i,
+                    "type": "column",
+                    "name": meta.header,
+                    "sheet": meta.sheet,
+                    "data_type": meta.data_type,
+                    "sample_values": meta.sample_values,
+                    "addresses": meta.addresses,
+                    "score": score
+                }
+            else:  # row
+                result_info = {
+                    "index": i,
+                    "type": "row",
+                    "name": meta.first_cell_value,
+                    "sheet": meta.sheet,
+                    "data_type": meta.data_type,
+                    "sample_values": meta.sample_values,
+                    "addresses": meta.addresses,
+                    "score": score
+                }
+            formatted_results.append(result_info)
         
-        # Sort by relevance score and return top results
-        filtered_results.sort(key=lambda x: x[1], reverse=True)
-        return filtered_results[:10]
+        # LLM analysis prompt
+        system_prompt = """You are an expert data analyst helping identify relevant data for spreadsheet calculations.
+
+Your task is to analyze search results and determine which data sources are truly relevant for the requested calculation.
+
+CRITICAL MATCHING RULES:
+1. **STRICT CONCEPT MATCHING**: Only include data sources that represent the EXACT SAME concept as requested
+   - The data source name should be the same concept or a minor variation of the requested concept
+   - Do NOT include different but related business concepts, even if they seem relevant
+   - Do NOT include derivative metrics (rates, ratios, percentages, growth, margins when looking for base values)
+
+2. **Acceptable variations for concept matching**:
+   - Case variations: "Revenue" matches "revenue", "REVENUE"
+   - Minor modifiers: "Total Revenue", "Actual Revenue", "Revenue (2023)" all match "Revenue"
+   - Pluralization: "Employee" matches "Employees"
+   
+3. **REJECT different concepts entirely**:
+   - Even if business-related, different concepts should be rejected
+   - Examples of what to REJECT: If looking for "Revenue", reject "Profit", "Income", "Sales" (these are different concepts)
+   - If looking for "Cost", reject "Expense", "Budget", "Price" (these are different concepts)
+
+4. **Data type requirement**: Only numeric or mixed data types can be used for calculations
+
+CRITICAL: You MUST respond with ONLY valid JSON. No other text.
+
+Return your response in this exact format:
+{
+    "relevant_indices": [0, 2, 5],
+    "explanations": {
+        "0": "Exact match: 'Revenue' matches requested concept 'revenue'",
+        "2": "Acceptable variation: 'Total Revenue' matches requested concept 'revenue' with minor modifier",
+        "5": "REJECTED: 'Profit' is a different business concept than 'revenue'"
+    },
+    "summary": "Found 2 exact matches for requested concepts, rejected 1 different concept"
+}
+
+Rules:
+- BE EXTREMELY STRICT about concept matching - when in doubt, exclude rather than include
+- Only include if the data source represents essentially the same concept as requested
+- Exclude ALL different concepts, even if they seem business-related
+- Only include numeric or mixed data types"""
+
+        user_message = f"""
+Calculation Request: "{calc_request.original_query}"
+Target Concepts: {calc_request.target_concepts}
+Operation: {calc_request.operation}
+Filters: {calc_request.filters}
+
+Available Data Sources:
+{json.dumps(formatted_results, indent=2)}
+
+Which data sources are relevant for this calculation?
+"""
+        
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_message)
+        ]
+        
+        try:
+            response = self.llm.invoke(messages)
+            
+            # Clean and parse the response
+            clean_response = response.content.strip()
+            if clean_response.startswith("```json"):
+                clean_response = clean_response.replace("```json", "").replace("```", "").strip()
+            elif clean_response.startswith("```"):
+                clean_response = clean_response.replace("```", "").strip()
+            
+            llm_analysis = json.loads(clean_response)
+            
+            # Validate the structure
+            if "relevant_indices" not in llm_analysis:
+                raise ValueError("Missing relevant_indices in LLM response")
+            
+            # Filter results based on LLM analysis
+            llm_filtered_results = []
+            for index in llm_analysis["relevant_indices"]:
+                if 0 <= index < len(unique_results):
+                    llm_filtered_results.append(unique_results[index])
+                else:
+                    print(f"⚠️ Invalid index {index} from LLM, skipping")
+            
+            print(f"🤖 LLM identified {len(llm_filtered_results)} relevant data sources out of {len(unique_results)} candidates")
+            if "summary" in llm_analysis:
+                print(f"📝 LLM summary: {llm_analysis['summary']}")
+            
+            return llm_filtered_results
+            
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
+            # Fallback to original method if LLM fails
+            print(f"⚠️ LLM analysis failed: {e}, falling back to rule-based approach")
+            return self.identify_relevant_data(calc_request)
     
     def extract_all_column_values(self, column_meta: ColumnMetadata) -> List[float]:
         """Extract ALL numeric values from a column using fresh spreadsheet data"""
@@ -499,7 +525,7 @@ Respond with ONLY JSON, no other text."""
         print(f"🔍 Parsed calculation request: {calc_request.operation} on {calc_request.target_concepts}")
         
         # 2. Identify relevant data
-        data_sources = self.identify_relevant_data(calc_request)
+        data_sources = self.identify_relevant_data_with_llm(calc_request)
         print(f"📊 Found {len(data_sources)} relevant data sources")
         
         # 3. Extract numeric values
